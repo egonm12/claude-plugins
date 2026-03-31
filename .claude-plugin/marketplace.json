@@ -1,0 +1,21 @@
+{
+  "name": "egonm12-plugins",
+  "owner": {
+    "name": "Egon Meijers",
+    "url": "https://github.com/egonm12"
+  },
+  "metadata": {
+    "description": "Claude Code plugins by Egon Meijers"
+  },
+  "plugins": [
+    {
+      "name": "odoo-mcp",
+      "source": {
+        "source": "github",
+        "repo": "egonm12/odoo-mcp"
+      },
+      "description": "Odoo MCP tools for searching, creating, reading, and updating Odoo records via XML-RPC",
+      "version": "1.0.0"
+    }
+  ]
+}
