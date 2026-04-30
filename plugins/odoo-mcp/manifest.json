@@ -1,0 +1,96 @@
+{
+  "manifest_version": "0.3",
+  "name": "odoo-mcp",
+  "display_name": "Odoo MCP",
+  "version": "1.0.0",
+  "description": "Search, create, read, update, and delete Odoo records via XML-RPC",
+  "long_description": "An MCP bundle that exposes Odoo's XML-RPC API to MCP-aware hosts. Tools cover the full CRUD surface (search_read, search_ids, search_count, read_record, create_record, update_record, delete_record) plus schema discovery (list_models, get_model_fields). Authentication uses an Odoo API key, which is required when the user account has 2FA enabled. Errors are enriched with classification and fuzzy field/model name suggestions to help LLMs recover from typos.",
+  "author": {
+    "name": "Egon Meijers",
+    "url": "https://github.com/egonm12"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/egonm12/odoo-mcp"
+  },
+  "license": "MIT",
+  "keywords": ["odoo", "erp", "xml-rpc", "timesheet"],
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js"],
+      "env": {
+        "ODOO_URL": "${user_config.odoo_url}",
+        "ODOO_DB": "${user_config.odoo_db}",
+        "ODOO_USERNAME": "${user_config.odoo_username}",
+        "ODOO_API_KEY": "${user_config.odoo_api_key}",
+        "ODOO_TIMEOUT_MS": "${user_config.timeout_ms}",
+        "ODOO_VERBOSE": "${user_config.verbose_logging}"
+      }
+    }
+  },
+  "tools": [
+    { "name": "search_read", "description": "Search and read records matching an Odoo domain" },
+    { "name": "search_ids", "description": "Search for record IDs matching an Odoo domain" },
+    { "name": "search_count", "description": "Count records matching an Odoo domain" },
+    { "name": "read_record", "description": "Read records by ID" },
+    { "name": "create_record", "description": "Create a new record" },
+    { "name": "update_record", "description": "Update existing records by ID" },
+    { "name": "delete_record", "description": "Delete records by ID" },
+    { "name": "list_models", "description": "List available Odoo models, optionally filtered" },
+    { "name": "get_model_fields", "description": "Get field metadata for a model" }
+  ],
+  "user_config": {
+    "odoo_url": {
+      "type": "string",
+      "title": "Odoo URL",
+      "description": "Base URL of the Odoo instance (e.g. https://example.odoo.com)",
+      "required": true
+    },
+    "odoo_db": {
+      "type": "string",
+      "title": "Database",
+      "description": "Odoo database name",
+      "required": true
+    },
+    "odoo_username": {
+      "type": "string",
+      "title": "Username",
+      "description": "Odoo user email",
+      "required": true
+    },
+    "odoo_api_key": {
+      "type": "string",
+      "title": "API key",
+      "description": "Odoo API key (replaces password; required when 2FA is enabled)",
+      "sensitive": true,
+      "required": true
+    },
+    "timeout_ms": {
+      "type": "number",
+      "title": "Request timeout (ms)",
+      "description": "Maximum time to wait for a single Odoo XML-RPC call",
+      "default": 30000,
+      "min": 1000,
+      "max": 600000,
+      "required": false
+    },
+    "verbose_logging": {
+      "type": "boolean",
+      "title": "Verbose logging",
+      "description": "Log every tool call and Odoo request to stderr",
+      "default": false,
+      "required": false
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  },
+  "privacy_policies": []
+}

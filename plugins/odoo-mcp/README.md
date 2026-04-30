@@ -1,78 +1,16 @@
-# Odoo MCP server
+# Odoo MCP
 
-A Model Context Protocol (MCP) server for Odoo that supports API key authentication, enabling use with Odoo accounts that have two-factor authentication (2FA) enabled.
+A Model Context Protocol (MCP) server for Odoo, packaged as an [MCP Bundle (`.mcpb`)](https://github.com/anthropics/mcpb). Authenticates with an Odoo API key, so it works with accounts that have 2FA enabled.
 
-## Features
+The same `server/index.js` is shipped two ways:
 
-- **API key authentication**: works with Odoo accounts that have 2FA enabled
-- **Schema introspection**: discover models and fields at runtime
-- **LLM-friendly errors**: structured error messages with suggestions to help self-correct
-- **Comprehensive tools**: search, create, read, update, and delete operations
-
-## Installation
-
-### As a Claude Code plugin (recommended)
-
-1. **Install the plugin:**
-   ```bash
-   claude plugin install odoo-mcp --scope user
-   ```
-
-2. **Set your Odoo credentials** as environment variables (e.g., in `~/.zshrc` or `~/.bashrc`):
-   ```bash
-   export ODOO_URL="https://your-odoo-instance.com"
-   export ODOO_DB="your-database-name"
-   export ODOO_USERNAME="your-email@example.com"
-   export ODOO_PASSWORD="your-api-key"
-   ```
-
-3. **Restart your terminal** and launch Claude Code. The Odoo tools are now available.
-
-### Manual setup
-
-If you prefer not to use the plugin, you can configure the MCP server directly.
-
-**Prerequisites:** Python 3.7+, [uv](https://docs.astral.sh/uv/)
-
-Add to your project's `.mcp.json` or Claude Desktop config:
-
-```json
-{
-  "mcpServers": {
-    "odoo": {
-      "command": "uv",
-      "args": [
-        "run",
-        "--with", "fastmcp>=0.1.0",
-        "--with", "python-dotenv>=1.0.0",
-        "python",
-        "/path/to/odoo-mcp/server.py"
-      ],
-      "env": {
-        "ODOO_URL": "https://your-odoo-instance.com",
-        "ODOO_DB": "your-database-name",
-        "ODOO_USERNAME": "your-email@example.com",
-        "ODOO_PASSWORD": "your-api-key"
-      }
-    }
-  }
-}
-```
-
-## Getting an API key
-
-1. Log in to your Odoo instance
-2. Go to Preferences > Account Security > API Keys
-3. Click "New API Key"
-4. Give it a descriptive name (e.g., "Claude MCP")
-5. Copy the generated key and use it as `ODOO_PASSWORD`
+- **MCPB bundle** — packaged via `mcpb pack` and loaded by MCPB-aware hosts (Claude Desktop). Configuration is collected from the user via `manifest.json`'s `user_config`.
+- **Claude Code plugin** — loaded from `.claude-plugin/plugin.json`. Configuration is read from environment variables.
 
 ## Available tools
 
-### Data operations
-
 | Tool | Description |
-|------|-------------|
+| --- | --- |
 | `search_read` | Search records and return their data |
 | `search_ids` | Search for record IDs only |
 | `search_count` | Count matching records |
@@ -80,58 +18,134 @@ Add to your project's `.mcp.json` or Claude Desktop config:
 | `create_record` | Create a new record |
 | `update_record` | Update existing records |
 | `delete_record` | Delete records by ID |
+| `list_models` | List available Odoo models with an optional keyword filter |
+| `get_model_fields` | Get field metadata (name, type, label, required) for a model |
 
-### Schema introspection
+All tool responses are JSON objects with a `success` boolean. Errors include an `error_type` (`invalid_field`, `invalid_model`, `access_denied`, `validation_error`, `connection_error`, `unknown`) and, where useful, fuzzy-matched `suggestions` to help an LLM recover from typos.
 
-| Tool | Description |
-|------|-------------|
-| `list_models` | List available Odoo models with optional keyword filter |
-| `get_model_fields` | Get field metadata for a model (name, type, required) |
+## Building the bundle
+
+Prerequisite: Node.js 18 or newer.
+
+```sh
+cd plugins/odoo-mcp
+npm install
+npm test
+npx -y @anthropic-ai/mcpb pack .
+```
+
+The pack step produces `odoo-mcp-1.0.0.mcpb`. Open the file with an MCPB-compatible host (e.g. Claude Desktop) to install.
+
+The bundle prompts the user for:
+
+- **Odoo URL** — base URL of the instance, e.g. `https://example.odoo.com`
+- **Database** — Odoo database name
+- **Username** — Odoo user email
+- **API key** — stored as a sensitive value (use this in place of a password; required when 2FA is enabled)
+- **Request timeout (ms)** — optional, default `30000`
+- **Verbose logging** — optional boolean; logs every tool call and result preview to stderr
+
+## Using as a Claude Code plugin
+
+Once installed via the marketplace, set the credentials in your shell:
+
+```sh
+export ODOO_URL="https://your-odoo-instance.com"
+export ODOO_DB="your-database-name"
+export ODOO_USERNAME="your-email@example.com"
+export ODOO_API_KEY="your-api-key"
+```
+
+Restart your terminal, launch Claude Code, and the Odoo tools will be available.
+
+The legacy `ODOO_PASSWORD` variable is also accepted for backwards compatibility.
+
+## Getting an API key
+
+1. Log in to your Odoo instance.
+2. Go to **Preferences → Account Security → API Keys**.
+3. Click **New API Key** and give it a descriptive name (e.g. "Claude MCP").
+4. Copy the generated key and use it as `ODOO_API_KEY`.
 
 ## Examples
 
-### Find a project
-```
+Find a project:
+
+```text
 search_read(model='project.project', domain=[['name', 'ilike', 'Hertek']], fields=['id', 'name'])
 ```
 
-### Create a timesheet entry
-```
+Create a timesheet entry:
+
+```text
 create_record(model='account.analytic.line', values={
-    'date': '2025-01-15',
-    'project_id': 1814,
-    'task_id': 23004,
-    'name': 'Development work',
-    'unit_amount': 4.5,
-    'employee_id': 50
+  date: '2025-01-15',
+  project_id: 1814,
+  task_id: 23004,
+  name: 'Development work',
+  unit_amount: 4.5,
+  employee_id: 50
 })
 ```
 
-### Discover models
-```
+Discover models matching a keyword:
+
+```text
 list_models(filter='project')
 ```
 
-### Inspect a model's fields
-```
+Inspect a model's schema:
+
+```text
 get_model_fields(model='project.project', field_types=['char', 'many2one'])
+```
+
+## Development
+
+```sh
+npm install      # install runtime + dev deps
+npm test         # run the node:test suite (no Odoo connection needed; uses a mock client)
+npm start        # launch the server over stdio (for manual MCP probes)
+```
+
+The MCP protocol layer is intentionally thin: `server/index.js` only wires `ListTools`/`CallTool` to a pure `callTool(client, name, args)` function in `server/tools.js`. Tests exercise that function directly with a mock client; no real XML-RPC traffic occurs in the suite.
+
+### Layout
+
+```
+plugins/odoo-mcp/
+├── manifest.json              # MCPB manifest (host-facing metadata)
+├── package.json               # Node deps and scripts
+├── .claude-plugin/
+│   └── plugin.json            # Claude Code plugin entry point
+├── server/
+│   ├── index.js               # stdio entry: wires SDK to callTool()
+│   ├── tools.js               # tool definitions + dispatcher
+│   ├── odoo-client.js         # XML-RPC client with API key auth + timeout
+│   └── errors.js              # error classification + fuzzy suggestions
+└── test/
+    ├── helpers.js
+    ├── tools.test.js
+    ├── error-messages.test.js
+    ├── schema-introspection.test.js
+    └── delete-record.test.js
 ```
 
 ## Troubleshooting
 
-| Error | Solution |
-|-------|----------|
-| Authentication failed | Verify your API key, URL, database, and username |
-| Connection refused | Check that ODOO_URL is accessible and uses `https://` |
-| Model does not exist | Check the model name; use `list_models` to discover valid names |
-| Invalid field | Check field names; the error message suggests valid alternatives |
-| Tools not appearing | Restart Claude Code after configuration changes |
+| Error | Resolution |
+| --- | --- |
+| `Authentication failed - check credentials` | Verify the API key, URL, database, and username. |
+| `Failed to connect to Odoo: …` | Confirm `ODOO_URL` is reachable and uses `https://`. |
+| `Model 'X' does not exist` | The error message lists fuzzy-matched alternatives; or run `list_models` to discover names. |
+| `Invalid field 'X' on model 'Y'` | The error message lists fuzzy-matched alternatives; or run `get_model_fields` to inspect the schema. |
+| `Odoo request timed out after Nms` | Increase the **Request timeout (ms)** user_config value (or `ODOO_TIMEOUT_MS`). |
 
 ## Security
 
-- Never commit API keys to version control
-- API keys have the same permissions as your Odoo account
-- The MCP server runs locally and communicates via STDIO
+- Never commit the API key. The MCPB user_config marks it as sensitive so the host stores it securely.
+- The API key inherits all permissions of the Odoo user that owns it.
+- The server runs locally and communicates over stdio; no traffic leaves the machine except XML-RPC calls to your configured Odoo instance.
 
 ## License
 
