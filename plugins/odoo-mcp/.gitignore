@@ -1,0 +1,8 @@
+.beans
+.beans.yml
+CLAUDE.md
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+problem-analysis*.md

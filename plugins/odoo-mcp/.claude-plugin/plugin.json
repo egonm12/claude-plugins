@@ -1,0 +1,30 @@
+{
+  "name": "odoo-mcp",
+  "version": "1.0.0",
+  "description": "Odoo MCP tools for searching, creating, reading, and updating Odoo records via XML-RPC",
+  "author": {
+    "name": "Egon Meijers",
+    "url": "https://github.com/egonm12"
+  },
+  "repository": "https://github.com/egonm12/odoo-mcp",
+  "license": "MIT",
+  "keywords": ["odoo", "erp", "xml-rpc", "timesheet"],
+  "mcpServers": {
+    "odoo": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--with", "fastmcp>=0.1.0",
+        "--with", "python-dotenv>=1.0.0",
+        "python",
+        "${CLAUDE_PLUGIN_ROOT}/server.py"
+      ],
+      "env": {
+        "ODOO_URL": "${ODOO_URL}",
+        "ODOO_DB": "${ODOO_DB}",
+        "ODOO_USERNAME": "${ODOO_USERNAME}",
+        "ODOO_PASSWORD": "${ODOO_PASSWORD}"
+      }
+    }
+  }
+}

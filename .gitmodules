@@ -1,3 +1,0 @@
-[submodule "plugins/odoo-mcp"]
-	path = plugins/odoo-mcp
-	url = git@github.com:egonm12/odoo-mcp.git
