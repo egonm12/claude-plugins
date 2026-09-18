@@ -13,6 +13,12 @@
       "source": "./plugins/odoo-mcp",
       "description": "Odoo MCP tools for searching, creating, reading, and updating Odoo records via XML-RPC",
       "version": "1.0.0"
+    },
+    {
+      "name": "delegation-policy",
+      "source": "./plugins/delegation-policy",
+      "description": "Keeps the main thread in an orchestrator role. Blocks Fable subagents, warns when a subagent model cannot be resolved, and holds subagents to verified reporting.",
+      "version": "0.1.0"
     }
   ]
 }
