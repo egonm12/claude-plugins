@@ -1,8 +1,8 @@
 name: orchestrator
 version: 0.2.0
-description: Orchestrator delegation policy. Blocks Fable subagents, warns on unresolvable model choices, and requires subagents to verify before reporting.
+description: Keeps the main thread in the orchestrator role. Blocks Fable workers, warns when a worker model is missing or unknown, and holds workers to verified reporting.
 author: Egon Meijers
-license: UNLICENSED
+license: MIT
 target: all
 type: hybrid
 
