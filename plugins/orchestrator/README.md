@@ -134,7 +134,7 @@ All optional, all environment variables.
 | `ORCHESTRATOR_ROUTER_OFF` | `0` | `1` switches off the router steps and keeps the gate, the loader and the reminder |
 | `ORCHESTRATOR_ROUTER_URL` | `http://127.0.0.1:8790` | Where the hooks find the daemon |
 | `ORCHESTRATOR_ROUTER_PYTHON` | `<data dir>/router-venv/bin/python` | Interpreter that starts the daemon |
-| `ORCHESTRATOR_LAYA_VERSION` | `0.3.7` | laya version that `router/install.sh` installs. Only read by the installer |
+| `ORCHESTRATOR_LAYA_VERSION` | `0.3.11` | laya version that `router/install.sh` installs. Only read by the installer |
 | `ORCHESTRATOR_ROUTER_TIMEOUT_MS` | `1500` | How long a hook waits for a verdict |
 | `ORCHESTRATOR_THRESHOLD_DELEGATE` | `2` | Exploratory commands allowed after a `delegate` verdict |
 | `ORCHESTRATOR_THRESHOLD_SELF` | `5` | Allowed after a `self` verdict |
