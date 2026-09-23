@@ -18,7 +18,7 @@
       "name": "orchestrator",
       "source": "./plugins/orchestrator",
       "description": "Keeps the main thread in the orchestrator role. Blocks Fable workers, warns when a worker model is missing or unknown, and holds workers to verified reporting.",
-      "version": "0.3.0"
+      "version": "0.4.0"
     }
   ]
 }

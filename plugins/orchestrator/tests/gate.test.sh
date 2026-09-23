@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline tests for the orchestrator package. Needs bash and jq.
+# Covers the model gate, the per-turn reminder, the package files and drift.
 # Run from anywhere: bash plugins/orchestrator/tests/gate.test.sh
 
 set -uo pipefail
@@ -100,6 +101,15 @@ done
 table=$(grep -Eo '^\| `[a-z]+` \|' "$protocol" | tr -d '|` ' | paste -sd, -)
 default=$(grep -Eo 'ORCHESTRATOR_MODELS:-[a-z,]+' "$gate" | sed 's/.*:-//')
 [ "$table" = "$default" ] && ok || not_ok "drift: protocol model table ($table) differs from the gate default ($default)"
+
+# Per-turn reminder: it repeats the protocol's one reminder line.
+reminder="$root/hooks/scripts/delegation-reminder.sh"
+[ "$(grep -c '^> Before you start:' "$protocol")" = "1" ] && ok || not_ok "reminder: protocol does not have exactly one '> Before you start:' line"
+check "reminder text"     "$reminder" '{"prompt":"x"}' 0 "^orchestrator: Before you start: if this needs more than two exploratory commands" "" CLAUDE_PLUGIN_ROOT="$root"
+check "reminder fallback" "$reminder" '{"prompt":"x"}' 0 "^orchestrator: Before you start, decide" "" CLAUDE_PLUGIN_ROOT="$tmp/missing"
+check "reminder off"      "$reminder" '{"prompt":"x"}' 0 "" "" CLAUDE_PLUGIN_ROOT="$root" ORCHESTRATOR_OFF=1
+jq -e '.hooks.UserPromptSubmit[0].hooks[0].command | test("delegation-reminder.sh")' "$root/hooks/hooks.json" >/dev/null \
+  && ok || not_ok "hooks.json does not register the reminder on UserPromptSubmit"
 
 # The tool-neutral instructions must not name models.
 grep -Eiq 'opus|sonnet|haiku|fable' "$root/.apm/instructions/orchestrator.instructions.md" \
