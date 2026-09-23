@@ -7,9 +7,33 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DATA_DIR="${CLAUDE_PLUGIN_DATA:-$HOME/.claude/orchestrator}"
+LAYA_VERSION="${ORCHESTRATOR_LAYA_VERSION:-0.3.11}"
+
+# The data directory must be the one Claude Code gives this package's hooks.
+# A CLAUDE_PLUGIN_DATA in your shell can belong to another package, so it
+# only counts when it names an orchestrator directory.
+data_dir() {
+  case "$(basename "${CLAUDE_PLUGIN_DATA:-}")" in
+    orchestrator-*) printf '%s' "$CLAUDE_PLUGIN_DATA"; return ;;
+  esac
+  # Installed from a marketplace: the cache path names the marketplace.
+  case "$SCRIPT_DIR" in
+    "$HOME"/.claude/plugins/cache/*/orchestrator/*/router)
+      local marketplace
+      marketplace=$(printf '%s' "$SCRIPT_DIR" | sed -E 's#.*/plugins/cache/([^/]+)/orchestrator/.*#\1#')
+      printf '%s' "$HOME/.claude/plugins/data/orchestrator-$marketplace"
+      return ;;
+  esac
+  # A repository checkout: use the marketplace install's directory when it exists.
+  if [ -d "$HOME/.claude/plugins/data/orchestrator-egonm12-plugins" ]; then
+    printf '%s' "$HOME/.claude/plugins/data/orchestrator-egonm12-plugins"
+    return
+  fi
+  printf '%s' "$HOME/.claude/orchestrator"
+}
+
+DATA_DIR="$(data_dir)"
 VENV_DIR="$DATA_DIR/router-venv"
-LAYA_VERSION="${ORCHESTRATOR_LAYA_VERSION:-0.3.7}"
 
 mkdir -p "$DATA_DIR"
 
