@@ -7,7 +7,7 @@ A Claude Code plugin marketplace by Egon Meijers.
 | Plugin | Version | Description |
 |--------|---------|-------------|
 | [odoo-mcp](plugins/odoo-mcp/README.md) | 1.0.0 | Odoo MCP tools to search, create, read, update and delete records through XML-RPC. |
-| [orchestrator](plugins/orchestrator/README.md) | 0.2.0 | Keeps the main thread in an orchestrator role. Blocks Fable subagents and holds subagents to verified reporting. |
+| [orchestrator](plugins/orchestrator/README.md) | 0.2.0 | Keeps the main thread in the orchestrator role. Blocks Fable workers, warns when a worker model is missing or unknown, and holds workers to verified reporting. |
 
 ## Installation
 
@@ -41,4 +41,6 @@ Use an Odoo API key, not your password. Odoo requires a key when the account has
 ## Prerequisites for orchestrator
 
 - `bash` on the path. The hooks are shell scripts.
-- `jq` on the path. Without `jq`, the model gate lets every subagent call through without a check.
+- `jq` on the path. Without `jq`, the model gate runs in reduced mode and only blocks calls that mention Fable.
+
+Upgrading from `delegation-policy`? See [the upgrade steps](plugins/orchestrator/README.md#upgrade-from-delegation-policy).
