@@ -57,12 +57,26 @@ def session_start(payload: Dict[str, Any], env: Mapping[str, str], config: Confi
 # Prompt: reminder, finalise previous turn, route verdict, effective route, new state, log prompt, hint.
 
 def prompt(payload: Dict[str, Any], env: Mapping[str, str], config: Config) -> HookResult:
+    prompt_text = hook_payload.field_text(payload, "prompt")
+    if rules.is_worker_report(prompt_text):
+        if not config.router_off:
+            guarded(lambda: _reopen_finalized_turn(payload, config), None)
+        return HookResult()
     out = [reminder_line(config)]
     if not config.router_off:
         hint = guarded(lambda: _route_prompt(payload, env, config), None)
         if hint:
             out.append(hint)
     return lines(out)
+
+
+def _reopen_finalized_turn(payload: Dict[str, Any], config: Config) -> None:
+    """A worker report never starts a turn. If Stop already finalized this one, reopen it so the
+    next Stop writes a fresh prompt_outcome with the updated counts."""
+    path, current = state.load_for(config.state_dir, payload)
+    if current is not None and current.finalized:
+        current.finalized = False
+        state.save(path, current)
 
 
 def reminder_line(config: Config) -> str:

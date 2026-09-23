@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .config import DEFAULT_PORT, env_int
 
@@ -14,6 +14,13 @@ ROUTES = ("delegate", "self", "skill")
 # Routes the hooks act on. "unsure" is a model verdict too close to call.
 EFFECTIVE_ROUTES = ROUTES + ("unsure",)
 TIERS = ("opus", "sonnet", "haiku")
+# Weakest to strongest, for comparing a given model against the router's tier.
+TIER_RANK = {"haiku": 0, "sonnet": 1, "opus": 2}
+# Prompt text that is a worker hand-back or a background task notice, not something the user typed.
+WORKER_REPORT_PREFIXES = ("<agent-message", "<task-notification")
+# Words that mark a worker call as judgement work, so the model pick never drops it to haiku.
+JUDGEMENT_WORDS = ("review", "reviews", "reviewer", "reviewing", "audit", "auditing", "security", "design",
+                    "spec", "specs", "specification", "architecture")
 
 # One leading "cd <path> &&" or "cd <path>;" is skipped before the first word decides.
 _CD_PREFIX = re.compile(r"^\s*cd\s+[^;&]+(&&|;)")
@@ -164,6 +171,11 @@ def is_short(text: str, limit: int) -> bool:
     return 0 < len((text or "").split()) <= limit
 
 
+def is_worker_report(text: str) -> bool:
+    """True when the prompt text is a worker hand-back or a task notice, not a user prompt."""
+    return (text or "").lstrip().startswith(WORKER_REPORT_PREFIXES)
+
+
 def _names_word(text: str, word: str) -> bool:
     """True when the word appears with no letter, digit, underscore or hyphen right next to it."""
     return bool(word) and re.search(r"(?<![\w-])" + re.escape(word) + r"(?![\w-])", text) is not None
@@ -176,6 +188,59 @@ def user_named_subagent(prompt: str, subagent_type: str) -> bool:
         return False
     text = (prompt or "").lower()
     return _names_word(text, wanted) or _names_word(text, wanted.rsplit(":", 1)[-1])
+
+
+def normalize_tier(model: Any) -> Optional[str]:
+    """The model as one of the three tiers, case-insensitive, or None when it is not exactly one of them."""
+    text = model_text(model).strip().lower()
+    return text if text in TIERS else None
+
+
+def tier_margin(tier_probs: Mapping[str, Any]) -> Optional[float]:
+    """The gap between the top and second tier probabilities, or None with fewer than two numbers."""
+    values = sorted(
+        v for k, v in tier_probs.items()
+        if k in TIERS and isinstance(v, (int, float)) and not isinstance(v, bool)
+    )
+    if len(values) < 2:
+        return None
+    return round(values[-1] - values[-2], 6)
+
+
+def names_judgement_work(text: str) -> bool:
+    """True when a judgement word appears in the text as a whole word. A hyphen counts as a boundary."""
+    lowered = (text or "").lower()
+    return any(re.search(r"\b" + word + r"\b", lowered) for word in JUDGEMENT_WORDS)
+
+
+def pick_tier(given: Any, router_tier: str, tier_probs: Mapping[str, Any], guard: float,
+              judgement: bool) -> Tuple[Optional[str], str, Optional[float]]:
+    """The tier for a worker call, the reason for it, and the tier margin.
+
+    Called only when the router gave a tier. None as the tier means keep the given model as is.
+    An upgrade to a stronger tier is always applied. A downgrade to a weaker tier is applied only
+    when the margin between the top two tier probabilities is at least the guard, unless the guard
+    is 0 or less, which disables the check. The judgement floor runs last and never leaves haiku
+    as the result when the task reads as judgement work.
+    """
+    margin = tier_margin(tier_probs)
+    given_tier = normalize_tier(given)
+    if given_tier is None:
+        tier, reason = router_tier, "no_model_given"
+    else:
+        given_rank, router_rank = TIER_RANK[given_tier], TIER_RANK[router_tier]
+        if router_rank > given_rank:
+            tier, reason = router_tier, "upgrade"
+        elif router_rank < given_rank:
+            if guard <= 0 or (margin is not None and margin >= guard):
+                tier, reason = router_tier, "downgrade"
+            else:
+                tier, reason = None, "downgrade_blocked"
+        else:
+            tier, reason = given_tier, "no_change"
+    if tier == "haiku" and judgement:
+        tier, reason = "sonnet", "judgement_floor"
+    return tier, reason, margin
 
 
 def port_from_url(url: str, default: int = DEFAULT_PORT) -> int:

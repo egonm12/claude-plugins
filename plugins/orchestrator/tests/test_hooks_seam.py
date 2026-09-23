@@ -63,14 +63,21 @@ STUB_CLOSE_SELF = json.dumps({
     "latency_ms": 97.0, "by_regex": False,
 })
 STUB_TIER_HAIKU = json.dumps({
-    "tier": "haiku", "tier_conf": 0.4,
-    "tier_probs": {"opus": 0.1, "sonnet": 0.5, "haiku": 0.4},
+    "tier": "haiku", "tier_conf": 0.8,
+    "tier_probs": {"opus": 0.05, "sonnet": 0.15, "haiku": 0.8},
     "latency_ms": 90.1,
 })
 STUB_TIER_OPUS = json.dumps({
     "tier": "opus", "tier_conf": 0.6,
     "tier_probs": {"opus": 0.6, "sonnet": 0.3, "haiku": 0.1},
     "latency_ms": 88.0,
+})
+# The real case that motivated the downgrade guard: opus given, haiku the router's top pick, but too
+# close to sonnet and opus to act on with confidence.
+STUB_TIER_CLOSE_HAIKU = json.dumps({
+    "tier": "haiku", "tier_conf": 0.3764,
+    "tier_probs": {"opus": 0.3317, "sonnet": 0.292, "haiku": 0.3764},
+    "latency_ms": 91.0,
 })
 
 # Message texts. The gate and fallback texts are "as today" in the contract.
@@ -119,6 +126,9 @@ def pick_set(tier: str) -> str:
 
 def pick_replace(tier: str, given: str) -> str:
     return f'orchestrator: the router set model "{tier}" for this worker, replacing "{given}".'
+
+
+FLOOR_NOTE = "the task reads as judgement work, so the router did not use haiku."
 
 
 def exploration_msg(n: int, threshold: int, route: str) -> str:
@@ -704,6 +714,83 @@ class PromptUnsureAndCarryTest(SeamCase):
         self.assertEqual(self.state("s2")["route"], "self")
 
 
+# ---------------------------------------------------------------- prompt: worker reports
+
+
+class WorkerReportTest(SeamCase):
+    def report(self, session: str, text: str, **env: str) -> Result:
+        return self.hook("prompt", prompt_payload(session, text), ORCHESTRATOR_ROUTER_STUB=STUB_DELEGATE, **env)
+
+    def test_agent_message_and_task_notification_produce_no_output(self) -> None:
+        for label, text in (
+            ("agent-message", '<agent-message from="a2c95a8d059e8622e">done</agent-message>'),
+            ("task-notification", "<task-notification>\n<task-id>abc</task-id>"),
+            ("leading whitespace", '  \n<agent-message from="x">'),
+        ):
+            with self.subTest(label):
+                self.assertSilent(self.report(f"w-{label}", text))
+
+    def test_no_turn_started_and_no_prompt_record(self) -> None:
+        self.report("s1", '<agent-message from="x">done</agent-message>')
+        self.assertIsNone(self.state("s1"))
+        self.assertEqual(self.log(), [])
+
+    def test_keeps_the_current_turn_and_its_counters(self) -> None:
+        self.start_turn("s1", STUB_DELEGATE, prompt="why does the build fail")
+        self.assertSilent(self.hook("tool-call", read_payload("s1")))
+        before = self.state("s1")
+        self.assertSilent(self.report("s1", '<agent-message from="x">done</agent-message>'))
+        after = self.state("s1")
+        self.assertEqual((after["turn"], after["route"], after["tier"], after["n_tool"], after["n_exploratory"],
+                          after["prompt"]),
+                         (before["turn"], before["route"], before["tier"], before["n_tool"],
+                          before["n_exploratory"], before["prompt"]))
+        self.assertIs(after["finalized"], False)
+        self.assertEqual(self.log(), [r for r in self.log() if r["kind"] == "prompt"])
+
+    def test_reopens_a_finalized_turn_for_a_fresh_outcome(self) -> None:
+        self.start_turn("s1", STUB_DELEGATE, prompt="why does the build fail")
+        self.assertSilent(self.hook("tool-call", read_payload("s1")))
+        self.assertSilent(self.hook("stop", {"session_id": "s1"}))
+        self.assertIs(self.state("s1")["finalized"], True)
+        self.assertEqual(len(self.log("prompt_outcome")), 1)
+
+        self.assertSilent(self.report("s1", "<task-notification>\n<task-id>1</task-id>"))
+        self.assertIs(self.state("s1")["finalized"], False)
+        self.assertEqual(len(self.log("prompt_outcome")), 1, "no outcome written just by reopening")
+
+        self.assertSilent(self.hook("tool-call", read_payload("s1")))
+        self.assertSilent(self.hook("stop", {"session_id": "s1"}))
+        outcomes = self.log("prompt_outcome")
+        self.assertEqual(len(outcomes), 2)
+        self.assertEqual([o["turn"] for o in outcomes], [1, 1])
+        self.assertEqual(outcomes[-1]["n_tool"], 2)
+
+    def test_exploration_warning_still_fires_at_most_once_after_a_worker_report(self) -> None:
+        self.start_turn("s1", STUB_DELEGATE, prompt="why does the build fail")
+        self.assertSilent(self.hook("tool-call", read_payload("s1")))
+        self.assertSilent(self.hook("stop", {"session_id": "s1"}))
+        self.assertSilent(self.report("s1", '<agent-message from="x">done</agent-message>'))
+
+        # Threshold 2: one more silent call, then the warning, and never a second one.
+        self.assertSilent(self.hook("tool-call", read_payload("s1")))
+        first_warning = self.hook("tool-call", read_payload("s1"))
+        self.assertOk(first_warning)
+        self.assertIn("exploratory commands", parse_json(first_warning.stdout)["systemMessage"])
+        self.assertSilent(self.hook("tool-call", read_payload("s1")))
+        self.assertEqual(len(self.log("exploration_warning")), 1)
+
+    def test_router_off_does_not_reopen_a_finalized_turn(self) -> None:
+        self.start_turn("s1", STUB_DELEGATE, prompt="why does the build fail")
+        self.assertSilent(self.hook("stop", {"session_id": "s1"}))
+        self.assertSilent(self.report("s1", '<agent-message from="x">done</agent-message>',
+                                      ORCHESTRATOR_ROUTER_OFF="1"))
+        self.assertIs(self.state("s1")["finalized"], True)
+
+    def test_off_switch_is_silent_too(self) -> None:
+        self.assertSilent(self.report("s1", '<agent-message from="x">done</agent-message>', ORCHESTRATOR_OFF="1"))
+
+
 # ---------------------------------------------------------------- agent-call: gate
 
 
@@ -1071,6 +1158,89 @@ class ModelPickTest(SeamCase):
         self.assertEqual(parse_json(result.stdout)["hookSpecificOutput"]["updatedInput"]["model"], "opus")
         self.assertFalse((self.data / "router-log.jsonl").exists())
         self.assertEqual(self.state("t1")["n_agent"], 1)
+
+
+# ---------------------------------------------------------------- agent-call: downgrade guard
+
+
+class ModelPickDowngradeGuardTest(ModelPickTest):
+    def test_real_case_keeps_opus_instead_of_dropping_to_haiku(self) -> None:
+        # opus 0.3317, sonnet 0.292, haiku 0.3764: too close to act on a downgrade from opus.
+        self.start_turn("t1", STUB_DELEGATE)
+        result = self.call({
+            "description": "Spec review of notifier diff", "model": "opus",
+            "prompt": "Read-only spec-conformance review. Do not change any files.",
+        }, stub=STUB_TIER_CLOSE_HAIKU)
+        self.assertSilent(result)
+        rec = self.last_agent_record()
+        self.assertEqual(
+            (rec["action"], rec["model_given"], rec["model_set"], rec["reason"], rec["verdict"]["tier"]),
+            ("kept", "opus", "opus", "downgrade_blocked", "haiku"),
+        )
+        self.assertEqual(rec["tier_margin"], 0.0447)
+
+    def test_sibling_case_keeps_opus(self) -> None:
+        # The sibling call: opus 0.5344 is the clear top pick, agreeing with Claude's own choice.
+        stub = json.dumps({"tier": "opus", "tier_conf": 0.5344,
+                           "tier_probs": {"opus": 0.5344, "sonnet": 0.31, "haiku": 0.1556}})
+        self.start_turn("t1", STUB_DELEGATE)
+        result = self.call({"description": "Standards review of notifier diff", "model": "opus"}, stub=stub)
+        self.assertOk(result)
+        out = parse_json(result.stdout)
+        self.assertEqual(out["systemMessage"], pick_set("opus"))
+        rec = self.last_agent_record()
+        self.assertEqual((rec["action"], rec["reason"]), ("set", "no_change"))
+
+    def test_downgrade_applies_with_enough_margin(self) -> None:
+        self.start_turn("t1", STUB_DELEGATE)
+        result = self.call({"description": "x", "model": "opus"}, stub=STUB_TIER_HAIKU)
+        self.assertOk(result)
+        out = parse_json(result.stdout)
+        self.assertEqual(out["hookSpecificOutput"]["updatedInput"]["model"], "haiku")
+        rec = self.last_agent_record()
+        self.assertEqual((rec["action"], rec["reason"], rec["tier_margin"]), ("set", "downgrade", 0.65))
+
+    def test_margin_setting_widens_or_disables_the_guard(self) -> None:
+        self.start_turn("t1", STUB_DELEGATE)
+        blocked = self.call({"description": "x", "model": "opus"}, stub=STUB_TIER_CLOSE_HAIKU,
+                            ORCHESTRATOR_TIER_MARGIN="0.5")
+        self.assertSilent(blocked)
+        self.assertEqual(self.last_agent_record()["reason"], "downgrade_blocked")
+        allowed = self.call({"description": "x", "model": "opus"}, stub=STUB_TIER_CLOSE_HAIKU,
+                            ORCHESTRATOR_TIER_MARGIN="0")
+        self.assertEqual(parse_json(allowed.stdout)["hookSpecificOutput"]["updatedInput"]["model"], "haiku")
+        self.assertEqual(self.last_agent_record()["reason"], "downgrade")
+
+    def test_upgrade_reason_is_free(self) -> None:
+        self.start_turn("t1", STUB_DELEGATE)
+        result = self.call({"description": "x", "model": "haiku"}, stub=STUB_TIER_OPUS)
+        self.assertOk(result)
+        self.assertEqual(parse_json(result.stdout)["hookSpecificOutput"]["updatedInput"]["model"], "opus")
+        self.assertEqual(self.last_agent_record()["reason"], "upgrade")
+
+    def test_judgement_floor_raises_haiku_and_tells_claude(self) -> None:
+        self.start_turn("t1", STUB_DELEGATE)
+        result = self.call({"description": "security audit of the diff"}, stub=STUB_TIER_HAIKU)
+        self.assertOk(result)
+        out = parse_json(result.stdout)
+        self.assertEqual(out["hookSpecificOutput"]["updatedInput"]["model"], "sonnet")
+        self.assertEqual(out["systemMessage"], pick_set("sonnet") + " " + FLOOR_NOTE)
+        self.assertEqual(out["hookSpecificOutput"]["additionalContext"], out["systemMessage"])
+        rec = self.last_agent_record()
+        self.assertEqual((rec["action"], rec["model_set"], rec["reason"]), ("set", "sonnet", "judgement_floor"))
+
+    def test_router_down_and_fork_reasons_are_untouched(self) -> None:
+        self.start_turn("t1", STUB_DELEGATE)
+        self.call({"description": "x", "model": "opus"}, stub="down")
+        self.assertEqual(self.last_agent_record()["reason"], "router_down")
+        self.call({"subagent_type": "fork", "model": "opus"}, stub=STUB_TIER_CLOSE_HAIKU)
+        self.assertEqual(self.last_agent_record()["reason"], "fork")
+
+    def test_user_named_subagent_reason_is_untouched(self) -> None:
+        self.start_turn("t1", STUB_DELEGATE, prompt="use the verifying-worker for this")
+        self.call({"subagent_type": "orchestrator:verifying-worker", "description": "x", "model": "sonnet"},
+                  stub=STUB_TIER_CLOSE_HAIKU)
+        self.assertEqual(self.last_agent_record()["reason"], "user_named_subagent")
 
 
 # ---------------------------------------------------------------- tool-call

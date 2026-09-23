@@ -192,6 +192,18 @@ class ShortPromptTest(unittest.TestCase):
         self.assertFalse(rules.is_short("continue", 0))
 
 
+class WorkerReportTest(unittest.TestCase):
+    def test_agent_message_and_task_notification_are_worker_reports(self) -> None:
+        for text in ('<agent-message from="a2c95a8d059e8622e">body</agent-message>',
+                     "<task-notification>\n<task-id>1</task-id>",
+                     "  \n <agent-message from=\"x\">", "\t<task-notification>"):
+            self.assertTrue(rules.is_worker_report(text), text)
+
+    def test_a_typed_prompt_is_not_a_worker_report(self) -> None:
+        for text in ("why does the build fail", "", "   ", "please read <agent-message> in the log"):
+            self.assertFalse(rules.is_worker_report(text), text)
+
+
 class NamedSubagentTest(unittest.TestCase):
     def test_full_type(self) -> None:
         self.assertTrue(rules.user_named_subagent(
@@ -236,6 +248,99 @@ class NamedSubagentTest(unittest.TestCase):
 
     def test_empty_type_is_false(self) -> None:
         self.assertFalse(rules.user_named_subagent("make a plan first", ""))
+
+
+class NormalizeTierTest(unittest.TestCase):
+    def test_exact_names(self) -> None:
+        for model, want in (("opus", "opus"), ("SONNET", "sonnet"), (" Haiku ", "haiku")):
+            self.assertEqual(rules.normalize_tier(model), want, model)
+
+    def test_not_a_tier_name(self) -> None:
+        for model in (None, "", "claude-opus-5-5", "gpt-5", {"name": "opus"}, "fable"):
+            self.assertIsNone(rules.normalize_tier(model), model)
+
+
+class TierMarginTest(unittest.TestCase):
+    def test_gap_between_top_two(self) -> None:
+        self.assertEqual(rules.tier_margin({"opus": 0.3317, "sonnet": 0.292, "haiku": 0.3764}), 0.0447)
+        self.assertEqual(rules.tier_margin({"opus": 0.6, "sonnet": 0.3, "haiku": 0.1}), 0.3)
+
+    def test_missing_or_short(self) -> None:
+        for probs in ({}, {"opus": 0.5}, {"opus": "x", "sonnet": 0.5}):
+            self.assertIsNone(rules.tier_margin(probs), probs)
+
+    def test_non_numeric_values_are_ignored(self) -> None:
+        self.assertEqual(rules.tier_margin({"opus": "x", "sonnet": 0.5, "haiku": 0.2}), 0.3)
+
+    def test_unknown_keys_are_ignored(self) -> None:
+        self.assertIsNone(rules.tier_margin({"opus": 0.5, "gpt": 0.9}))
+
+
+class JudgementWordsTest(unittest.TestCase):
+    def test_named_words(self) -> None:
+        for text in ("Spec review of notifier diff", "a security audit", "system design doc",
+                      "the architecture", "code reviewer", "keeps reviewing it", "write the specs"):
+            self.assertTrue(rules.names_judgement_work(text), text)
+
+    def test_hyphen_counts_as_a_boundary(self) -> None:
+        self.assertTrue(rules.names_judgement_work("Read-only spec-conformance review"))
+
+    def test_not_judgement_work(self) -> None:
+        for text in ("count the files in src", "", "reviewership", "prereview", "specialist"):
+            self.assertFalse(rules.names_judgement_work(text), text)
+
+
+class PickTierTest(unittest.TestCase):
+    def test_no_given_model_uses_the_router_tier(self) -> None:
+        tier, reason, margin = rules.pick_tier(None, "sonnet", {}, 0.15, False)
+        self.assertEqual((tier, reason, margin), ("sonnet", "no_model_given", None))
+
+    def test_a_given_model_that_does_not_normalise_counts_as_no_model(self) -> None:
+        tier, reason, margin = rules.pick_tier("gpt-5", "opus", {}, 0.15, False)
+        self.assertEqual((tier, reason), ("opus", "no_model_given"))
+
+    def test_upgrade_is_free(self) -> None:
+        tier, reason, margin = rules.pick_tier("haiku", "opus", {"opus": 0.34, "sonnet": 0.33, "haiku": 0.33},
+                                               0.15, False)
+        self.assertEqual((tier, reason), ("opus", "upgrade"))
+
+    def test_downgrade_applies_with_enough_margin(self) -> None:
+        tier, reason, margin = rules.pick_tier("opus", "haiku", {"opus": 0.1, "sonnet": 0.1, "haiku": 0.8},
+                                               0.15, False)
+        self.assertEqual((tier, reason, margin), ("haiku", "downgrade", 0.7))
+
+    def test_downgrade_blocked_on_a_close_call(self) -> None:
+        # The real case: opus 0.3317, sonnet 0.292, haiku 0.3764. Claude gave opus.
+        tier, reason, margin = rules.pick_tier("opus", "haiku",
+                                               {"opus": 0.3317, "sonnet": 0.292, "haiku": 0.3764}, 0.15, False)
+        self.assertEqual((tier, reason, margin), (None, "downgrade_blocked", 0.0447))
+
+    def test_downgrade_blocked_without_a_margin(self) -> None:
+        tier, reason, margin = rules.pick_tier("opus", "haiku", {}, 0.15, False)
+        self.assertEqual((tier, reason, margin), (None, "downgrade_blocked", None))
+
+    def test_guard_zero_always_allows_the_downgrade(self) -> None:
+        tier, reason, margin = rules.pick_tier("opus", "haiku", {}, 0, False)
+        self.assertEqual((tier, reason), ("haiku", "downgrade"))
+
+    def test_no_change_when_tiers_already_match(self) -> None:
+        tier, reason, margin = rules.pick_tier("sonnet", "sonnet", {"opus": 0.34, "sonnet": 0.33, "haiku": 0.33},
+                                               0.15, False)
+        self.assertEqual((tier, reason), ("sonnet", "no_change"))
+
+    def test_judgement_floor_raises_haiku_to_sonnet(self) -> None:
+        for given, router in ((None, "haiku"), ("haiku", "haiku")):
+            with self.subTest((given, router)):
+                tier, reason, margin = rules.pick_tier(given, router, {}, 0.15, True)
+                self.assertEqual((tier, reason), ("sonnet", "judgement_floor"))
+
+    def test_judgement_floor_does_nothing_when_the_result_is_not_haiku(self) -> None:
+        tier, reason, margin = rules.pick_tier(None, "sonnet", {}, 0.15, True)
+        self.assertEqual((tier, reason), ("sonnet", "no_model_given"))
+
+    def test_judgement_floor_does_not_undo_a_blocked_downgrade(self) -> None:
+        tier, reason, margin = rules.pick_tier("opus", "haiku", {}, 0.15, True)
+        self.assertEqual((tier, reason), (None, "downgrade_blocked"))
 
 
 class PortTest(unittest.TestCase):
