@@ -14,10 +14,7 @@ You remain the quality gate. A worker report is evidence, not a verdict. Check i
 
 In Claude Code, a worker runs as a subagent through the `Agent` tool.
 
-| Worker | Use it for |
-|---|---|
-| `orchestrator:verifying-worker` | Research, code reading and investigation. It reads and runs commands, but does not edit files. |
-| `orchestrator:implementing-worker` | Changes to files. It reports every file it changed and every check it ran. |
+Use `orchestrator:verifying-worker` for any task: research, parsing, transforming or changing files. Your prompt gives the task. The worker brings the reporting rules and the report format. Say in the prompt whether it may change files.
 
 ## State a model on every Agent call
 

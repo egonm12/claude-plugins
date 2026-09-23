@@ -7,7 +7,7 @@ A Claude Code plugin marketplace by Egon Meijers.
 | Plugin | Version | Description |
 |--------|---------|-------------|
 | [odoo-mcp](plugins/odoo-mcp/README.md) | 1.0.0 | Odoo MCP tools to search, create, read, update and delete records through XML-RPC. |
-| [orchestrator](plugins/orchestrator/README.md) | 0.2.0 | Keeps the main thread in the orchestrator role. Blocks Fable workers, warns when a worker model is missing or unknown, and holds workers to verified reporting. |
+| [orchestrator](plugins/orchestrator/README.md) | 0.3.0 | Keeps the main thread in the orchestrator role. Blocks Fable workers, warns when a worker model is missing or unknown, and holds workers to verified reporting. |
 
 ## Installation
 

@@ -36,7 +36,7 @@ The orchestration idea works on any agent. Only the enforcement is specific to C
 |---|---|---|---|
 | Model gate | `hooks/scripts/agent-model-gate.sh` | Yes | No |
 | Protocol loader | `hooks/scripts/load-protocol.sh` | Yes | No |
-| Workers | `agents/*.md` | Yes | No |
+| Worker | `agents/verifying-worker.md` | Yes | No |
 | Instructions | `.apm/instructions/orchestrator.instructions.md` | Not needed | Yes, through `apm compile` into `AGENTS.md` |
 
 The instructions are tool-neutral. They name no models and no Claude Code tools.
@@ -47,10 +47,15 @@ The instructions are tool-neutral. They name no models and no Claude Code tools.
 |---|---|---|
 | Model gate | PreToolUse on `Agent` or `Task` | Denies any worker that asks for Fable. Warns Claude when the model is missing, unknown or a fork. |
 | Protocol loader | SessionStart | Loads `references/orchestrator-protocol.md` at session start. SessionStart fires again after compaction, so it reloads then too. |
-| `verifying-worker` | Agent | Research worker. Reads and runs commands, but does not edit files. |
-| `implementing-worker` | Agent | Implementation worker. Edits files and reports every file it changed and every check it ran. |
+| `verifying-worker` | Agent | Worker for any task. The orchestrator's prompt gives the task, and the worker brings the reporting rules, the report format and the scope rules. |
 
-Both workers carry the protocol's four reporting rules word for word.
+The worker carries the protocol's four reporting rules word for word.
+
+### Why one worker for any task
+
+The package ships one worker, not one per task type. Tasks come in too many kinds: research, parsing, transforming, implementing, reviewing. Most tasks mix several. What a built-in worker adds is the reporting contract, which holds even when the orchestrator forgets to paste the rules, plus a pinned model. Both apply to every task type.
+
+Version 0.2.0 shipped a separate `implementing-worker`. Version 0.3.0 folded it into `verifying-worker`.
 
 ## The model rule
 
@@ -83,7 +88,7 @@ Version 0.1.0 had a SubagentStop prompt hook that blocked worker reports without
 - It fired for Claude Code's own internal agents too.
 - It cost one model call each time a worker stopped, and the off switch could not stop it.
 
-The orchestrator is the quality gate. The protocol tells it to check every report, and both workers carry the reporting rules in their system prompt.
+The orchestrator is the quality gate. The protocol tells it to check every report, and the worker carries the reporting rules in its system prompt.
 
 ## Why there is no per-turn reminder
 
@@ -112,15 +117,15 @@ If a session model field turns out to be present, the fork case can become a har
 | Component | Status |
 |---|---|
 | Fable deny | Confirmed live on 2026-09-13, on version 0.1.0. |
-| Warnings through `additionalContext` | Not yet confirmed live. The Claude Code hook docs say PreToolUse supports the field. |
-| SessionStart loader at startup and resume | Confirmed live on 2026-09-13. |
+| Warnings through `additionalContext` | Confirmed live on 2026-09-23, on version 0.2.0. A call without a model put the warning in Claude's context. |
+| SessionStart loader at startup and resume | Confirmed live on 2026-09-13, and again on 2026-09-23 on version 0.2.0. |
 | SessionStart reload after compaction | Not yet confirmed live. The Claude Code hook docs say SessionStart fires with source `compact`. |
 
-To confirm the open items, restart with `claude --debug`, delegate to a worker without a model, and run `/compact`.
+To confirm the open item, run `/compact` and check that "# Orchestrator protocol" is back in context.
 
 ## Known costs
 
-- The protocol adds about 530 words of context at session start and after each compaction.
+- The protocol adds about 520 words of context at session start and after each compaction.
 - A warning adds one short message to Claude's context for that Agent call.
 
 ## Testing
@@ -132,7 +137,7 @@ bash plugins/orchestrator/tests/gate.test.sh
 The test runs offline and needs `bash` and `jq`. It covers:
 - the model gate: Fable deny cases, allowed names and full IDs, warnings, bad input, the off switch, the debug capture and reduced mode without `jq`
 - JSON validity of `hooks.json` and `plugin.json`
-- drift: both workers must carry the protocol's four rules word for word, and the protocol's model table must match the gate's default list
+- drift: the worker must carry the protocol's four rules word for word, and the protocol's model table must match the gate's default list
 - tool neutrality: the instructions must not name a model
 
 The test does not check whether Claude Code fires the hooks. That needs a restart and `claude --debug`.
