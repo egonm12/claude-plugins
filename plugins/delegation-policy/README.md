@@ -13,6 +13,21 @@ Keeps the main Claude thread in an orchestrator role. It pushes work to subagent
 
 It also ships a `verifying-worker` agent whose system prompt carries the verification protocol.
 
+## Install
+
+You need `bash` and `jq` on the path. Without `jq`, the model gate lets every subagent call through without a check.
+
+1. Add the marketplace and install the plugin:
+   ```
+   /plugin marketplace add egonm12/claude-plugins
+   /plugin install delegation-policy@egonm12-plugins
+   ```
+2. Restart Claude Code. Hooks load at session start, so the plugin does nothing until you restart.
+
+## Turn it off
+
+Set `DELEGATION_POLICY_OFF=1` in the environment to disable every hook for that session.
+
 ## The model rule
 
 Deny what the hook can see is off policy. Warn about what it cannot resolve.
@@ -38,7 +53,7 @@ The UserPromptSubmit reminder nudges the current session. It is advisory and cos
 
 Confirmed on 2026-09-13: this build sends `tool_name` as `Agent`. A denied call surfaces as `PreToolUse:Agent hook error`. The matcher still accepts `Agent|Task` as cheap insurance for other builds, but only `Agent` is exercised here.
 
-To re-check on a different build, or to see every field the hook receives:
+To re-check on a different build, set `DELEGATION_POLICY_DEBUG`. The model gate then appends the full hook payload to that file on each `Agent` call.
 
 ```bash
 export DELEGATION_POLICY_DEBUG=/tmp/agent-hook.jsonl
@@ -46,19 +61,7 @@ export DELEGATION_POLICY_DEBUG=/tmp/agent-hook.jsonl
 jq -r '.tool_name' /tmp/agent-hook.jsonl
 ```
 
-The same capture shows every field the hook receives. If a session model field turns out to be present, the fork case can become a hard block instead of a warning.
-
-## Install
-
-Add the plugin from the `egon-local` marketplace, then restart Claude Code. Hooks load at session start, so a restart is required.
-
-## Turn it off
-
-Set `DELEGATION_POLICY_OFF=1` in the environment to disable every hook for that session.
-
-## Debug the payload
-
-Set `DELEGATION_POLICY_DEBUG=/tmp/agent-hook.jsonl` to append the real hook payload on each `Agent` call. Use it to see which fields Claude Code actually sends. If a session model field turns out to be present, the fork case can be made deterministic instead of advisory.
+The capture shows every field Claude Code sends. If a session model field turns out to be present, the fork case can become a hard block instead of a warning.
 
 ## Component status
 
