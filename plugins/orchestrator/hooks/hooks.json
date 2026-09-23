@@ -1,14 +1,14 @@
 {
-  "description": "Keeps the main thread in the orchestrator role. Blocks Fable workers, warns when a worker model is missing or unknown, and holds workers to verified reporting.",
+  "description": "Keeps the main thread in the orchestrator role. Blocks Fable workers, warns when a worker model is missing or unknown, holds workers to verified reporting, and lets an optional local classifier hint when to delegate and pick the worker model.",
   "hooks": {
-    "PreToolUse": [
+    "SessionStart": [
       {
-        "matcher": "Agent|Task",
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/agent-model-gate.sh\"",
-            "timeout": 5
+            "command": "\"${ORCHESTRATOR_PYTHON:-python3}\" \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.py\" session-start",
+            "timeout": 10
           }
         ]
       }
@@ -18,19 +18,40 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/delegation-reminder.sh\"",
+            "command": "\"${ORCHESTRATOR_PYTHON:-python3}\" \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.py\" prompt",
             "timeout": 5
           }
         ]
       }
     ],
-    "SessionStart": [
+    "PreToolUse": [
       {
-        "matcher": "*",
+        "matcher": "Agent|Task",
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/load-protocol.sh\"",
+            "command": "\"${ORCHESTRATOR_PYTHON:-python3}\" \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.py\" agent-call",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Read|Grep|Glob|WebFetch|WebSearch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${ORCHESTRATOR_PYTHON:-python3}\" \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.py\" tool-call",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${ORCHESTRATOR_PYTHON:-python3}\" \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.py\" stop",
             "timeout": 5
           }
         ]

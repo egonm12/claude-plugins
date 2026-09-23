@@ -6,7 +6,7 @@ This package uses the terms orchestrator, worker and delegation as defined in th
 
 ## Install in Claude Code
 
-You need `bash` and `jq` on the path. Without `jq`, the model gate runs in reduced mode. It blocks any Agent call that mentions Fable, checks nothing else, and tells you so.
+You need `python3`, version 3.9 or later, on the path. Every hook is one Python entry point with only standard library imports. Set `ORCHESTRATOR_PYTHON` to another interpreter when `python3` is not the one you want. On a Mac without developer tools, `/usr/bin/python3` is a stub that asks to install them, so install Python first or point the variable at one you have.
 
 1. Add the marketplace and install the package:
    ```
@@ -34,9 +34,8 @@ The orchestration idea works on any agent. Only the enforcement is specific to C
 
 | Part | File | Claude Code | Other agents, such as Codex |
 |---|---|---|---|
-| Model gate | `hooks/scripts/agent-model-gate.sh` | Yes | No |
-| Protocol loader | `hooks/scripts/load-protocol.sh` | Yes | No |
-| Per-turn reminder | `hooks/scripts/delegation-reminder.sh` | Yes | No |
+| Hooks: gate, loader, reminder, router | `hooks/hook.py` with the package `hooks/orchestrator_hooks/` | Yes | No |
+| Router service | `router/server.py` | Yes, optional | No |
 | Worker | `agents/verifying-worker.md` | Yes | No |
 | Instructions | `.apm/instructions/orchestrator.instructions.md` | Not needed | Yes, through `apm compile` into `AGENTS.md` |
 
@@ -49,9 +48,14 @@ The instructions are tool-neutral. They name no models and no Claude Code tools.
 | Model gate | PreToolUse on `Agent` or `Task` | Denies any worker that asks for Fable. Warns Claude when the model is missing, unknown or a fork. |
 | Protocol loader | SessionStart | Loads `references/orchestrator-protocol.md` at session start. SessionStart fires again after compaction, so it reloads then too. |
 | Per-turn reminder | UserPromptSubmit | Adds one line before Claude starts on each prompt: delegate the research when it needs more than two exploratory commands or the question is open. It reads that line from the protocol. |
+| Delegation hint | UserPromptSubmit | Asks the router whether the prompt needs an investigation. Adds one line only when it does. Needs the router, see below. |
+| Exploration counter | PreToolUse on Bash, Read, Grep, Glob, WebFetch, WebSearch | Counts exploratory commands in the main thread per turn. Warns once when the count passes a threshold that the router's verdict sets. |
+| Model pick | PreToolUse on `Agent` or `Task` | Picks the model for every worker call from the task text. Claude's own choice stands only when your prompt named that subagent. Needs the router. |
+| Router start | SessionStart | Starts the router daemon when it is installed and not running. |
+| Turn finaliser | Stop | Writes the turn's outcome to the router log. |
 | `verifying-worker` | Agent | Worker for any task. The orchestrator's prompt gives the task, and the worker brings the reporting rules, the report format and the scope rules. |
 
-The worker carries the protocol's four reporting rules word for word.
+All hooks run through one entry point, `hooks/hook.py`, called with the event name. Steps that share an event run in one process and produce one output. The gate and the model pick share the Agent call. The reminder and the hint share the prompt. The loader and the daemon start share session start. The worker carries the protocol's four reporting rules word for word. The router steps do nothing until you install the router.
 
 ### Why one worker for any task
 
@@ -73,13 +77,80 @@ Warnings go to Claude through `additionalContext` and to you through `systemMess
 
 To change the allowed list, set `ORCHESTRATOR_MODELS`, for example `ORCHESTRATOR_MODELS=opus,sonnet`. Fable stays denied even if you list it.
 
+With the router installed, the gate runs first and the model pick runs second on the same call. Fable is still denied before the router looks at the call. When the router sets a model, the missing-model and unknown-model warnings are both skipped. The router's own line already says what happened.
+
 ### Why forks are warned and not blocked
 
 A fork keeps its tool output out of the main thread, so it does save context. Its cost is a large input prompt, and that is mostly cache reads. The one real gap is that a fork inherits the session model. If the session itself runs on Fable, its forks are Fable workers and the hook cannot tell. Keep the session on Opus or Sonnet and the gap closes.
 
 ## Turn it off
 
-Set `ORCHESTRATOR_OFF=1` in the environment to switch off every hook for that session.
+Set `ORCHESTRATOR_OFF=1` in the environment to switch off every hook for that session. Set `ORCHESTRATOR_ROUTER_OFF=1` to switch off only the router hooks and keep the gate, the loader and the reminder.
+
+## The router
+
+The router is an optional local classifier that gives the hooks a fast verdict on two questions. Does this prompt need an investigation? Which model tier does this worker task need? It answers in about 100 ms on an Apple M-series chip, with no network call and no Claude tokens. It runs [laya](https://github.com/NandhaKishorM/laya), a 421 million parameter classifier, as a daemon on localhost.
+
+The hooks use the verdict in three advisory ways. Nothing blocks by default.
+
+- **Delegation hint.** When the route verdict is `delegate`, the prompt gets one extra line. It names the verdict, its confidence and the likely tier, and asks Claude to delegate before running commands. Quick prompts get nothing.
+- **Exploration counter.** The verdict sets a threshold for exploratory commands in the main thread: 2 after `delegate`, 5 after `self`, 3 otherwise. When the count passes it, Claude gets one warning for that turn. A wrong verdict only shifts the threshold. Set `ORCHESTRATOR_EXPLORATION_BLOCK=1` to turn the warning into a deny.
+- **Model pick.** On every worker call, the router picks `opus`, `sonnet` or `haiku` from the task text. The hook sets that pick on the call, also when Claude chose another model. Claude's choice stands only when your prompt named that subagent, for example "use the verifying-worker for this". You see the picked model in a system message. Claude gets one line of context only when its own choice was replaced. When the router is down, the call goes through as Claude wrote it.
+
+Every verdict and every outcome goes to an append-only log, so a better classifier can be trained on real sessions later.
+
+### Why the router advises and does not block
+
+Measured on 75 prompts from real sessions, Claude alone delegated 6 of the 29 prompts that needed it. Zero-shot laya flagged 22 of the 29, and wrongly flagged 10 of the 36 quick prompts. On 49 worker calls, Claude named no model on 23. Those numbers make laya a better advisor than the fixed reminder, and not good enough to block on. Two blind labellers agreed on 88 percent of route labels, so there is room to improve with training. The full evaluation is on the branch `prototype/laya-router`.
+
+The confidence values are not calibrated, because the checkpoint ships invalid temperatures. No decision in the package depends on confidence. It is logged for later.
+
+### Install the router
+
+You need Python 3.10 or later and about 3 GB of disk for the environment and the checkpoint.
+
+```bash
+bash ~/.claude/plugins/cache/egonm12-plugins/orchestrator/*/router/install.sh
+```
+
+Claude Code installs each plugin version under `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`. The wildcard picks the installed version. From a checkout of this repository, run `bash plugins/orchestrator/router/install.sh` instead. The script creates a Python environment in the plugin data directory, installs laya, and downloads the 842 MB English checkpoint once. The environment lives in the data directory and not under the version path, so it survives a plugin update. Restart Claude Code. The SessionStart hook then starts the daemon and prints one line to say so. The first verdicts arrive after the model has loaded, about 5 to 30 seconds later. Until then, the hooks behave as if the router is not installed.
+
+Check that it runs:
+
+```bash
+curl -s http://127.0.0.1:8790/health
+curl -s -X POST http://127.0.0.1:8790/route -d '{"text":"why does the login test fail after the refactor?"}'
+```
+
+The first command returns the status, the device and the checkpoint. The second returns the route and tier verdicts with probabilities and latency.
+
+### Router settings
+
+All optional, all environment variables.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ORCHESTRATOR_PYTHON` | `python3` | Interpreter that runs the hooks. Applies to every hook, not only the router |
+| `ORCHESTRATOR_ROUTER_OFF` | `0` | `1` switches off the router steps and keeps the gate, the loader and the reminder |
+| `ORCHESTRATOR_ROUTER_URL` | `http://127.0.0.1:8790` | Where the hooks find the daemon |
+| `ORCHESTRATOR_ROUTER_PYTHON` | `<data dir>/router-venv/bin/python` | Interpreter that starts the daemon |
+| `ORCHESTRATOR_LAYA_VERSION` | `0.3.7` | laya version that `router/install.sh` installs. Only read by the installer |
+| `ORCHESTRATOR_ROUTER_TIMEOUT_MS` | `1500` | How long a hook waits for a verdict |
+| `ORCHESTRATOR_THRESHOLD_DELEGATE` | `2` | Exploratory commands allowed after a `delegate` verdict |
+| `ORCHESTRATOR_THRESHOLD_SELF` | `5` | Allowed after a `self` verdict |
+| `ORCHESTRATOR_THRESHOLD_DEFAULT` | `3` | Allowed after `skill`, no verdict, or a down router |
+| `ORCHESTRATOR_EXPLORATION_BLOCK` | `0` | `1` denies the call instead of warning |
+| `ORCHESTRATOR_LOG_OFF` | `0` | `1` stops writing the log |
+
+### Where the data lives
+
+The router keeps everything in the plugin data directory that Claude Code provides through `CLAUDE_PLUGIN_DATA`, with `~/.claude/orchestrator` as the fallback. For a marketplace install that directory is `~/.claude/plugins/data/orchestrator-egonm12-plugins/`. That directory holds the Python environment, one state record per session, the daemon's own log, and the training log `router-log.jsonl`. It is never inside a repository.
+
+The training log holds your prompt texts and the task texts of your worker calls, truncated to 4000 characters. It also holds the router's verdicts and what happened in the turn. Set `ORCHESTRATOR_LOG_OFF=1` if you do not want that recorded. Delete the file to start over.
+
+### When the router is down
+
+Every router step fails open when the daemon is not installed, not running, or slow. The hint then prints nothing. The counter uses the default threshold. The model pick leaves the call as it is. The log records `down`. No hook waits longer than the request timeout. The existing gate, loader and reminder do not depend on the router at all.
 
 ## Why there is no report gate
 
@@ -110,7 +181,7 @@ Version 0.4.0 fixes both old problems and the new one:
 - It reads that line from the protocol, so it cannot drift. The test checks that the protocol has exactly one such line.
 - The protocol now gives countable triggers: more than two exploratory commands, an open question, or large output. It also says that research inside a skill still counts as research.
 
-If Claude still runs long investigations in the main thread, the next step is a counter hook. It would warn after a number of main-thread tool calls without a delegation. That needs the hook to tell the main thread apart from a worker, and nobody has checked yet that the hook payload allows that.
+Version 0.5.0 adds the counter hook that this left open. Hook payloads inside a worker carry an `agent_id` field, so the counter can tell the main thread apart from a worker. The router section above describes how the verdict sets the counter's threshold.
 
 ## Check that the hooks fire
 
@@ -136,25 +207,41 @@ If a session model field turns out to be present, the fork case can become a har
 | Warnings through `additionalContext` | Confirmed live on 2026-09-23, on version 0.2.0. A call without a model put the warning in Claude's context. |
 | SessionStart loader at startup and resume | Confirmed live on 2026-09-13, and again on 2026-09-23 on version 0.2.0. |
 | SessionStart reload after compaction | Confirmed live on 2026-09-23, on version 0.3.0. After `/compact`, the protocol was back in Claude's context. |
-| Per-turn reminder | Not yet confirmed live on version 0.4.0. It also needs a check that it fires when the prompt is a skill command such as `/release`. |
+| Per-turn reminder | Confirmed live on 2026-09-23, on version 0.4.0. It also fires on a skill command such as `/implement`. |
+| Python entry point for all hooks | Not yet confirmed live through Claude Code on version 0.5.0. The bash versions of the gate, loader and reminder were confirmed live. The Python port carries their test cases. |
+| Router: hint, counter, model pick, start, finaliser | Not yet confirmed live through Claude Code on version 0.5.0. On 2026-09-23 the hooks were run by hand against the real daemon and behaved as specified. Setting a model through `updatedInput` was confirmed in a separate hook experiment the same day. |
 
 ## Known costs
 
 - The protocol adds about 650 words of context at session start and after each compaction.
 - The reminder adds about 35 words of context on every prompt.
 - A warning adds one short message to Claude's context for that Agent call.
+- Each hook event starts one Python process, about 50 to 70 ms on an Apple M-series chip. The bash version before it cost 120 to 160 ms per hook.
+- With the router installed:
+  - The daemon holds 1 to 2 GB of memory.
+  - The checkpoint is an 842 MB one-time download.
+  - Each prompt and each worker call adds about 100 ms for the classifier.
+  - The first verdict after a daemon start can take about a second.
+  - The hint adds about 30 words only on prompts the router marks `delegate`.
 
 ## Testing
 
 ```bash
-bash plugins/orchestrator/tests/gate.test.sh
+python3 -m unittest discover -s plugins/orchestrator/tests -v
 ```
 
-The test runs offline and needs `bash` and `jq`. It covers:
-- the model gate: Fable deny cases, allowed names and full IDs, warnings, bad input, the off switch, the debug capture and reduced mode without `jq`
-- the per-turn reminder: its text, its fallback, the off switch, and its entry in `hooks.json`
-- JSON validity of `hooks.json` and `plugin.json`
-- drift: the worker must carry the protocol's four rules word for word, the protocol's model table must match the gate's default list, and the protocol must have exactly one reminder line
-- tool neutrality: the instructions must not name a model
+The tests run offline with the standard library only. They stub the router's answer through `ORCHESTRATOR_ROUTER_STUB` and point `CLAUDE_PLUGIN_DATA` at a temp dir, so they need no model and no network. Two seams:
 
-The test does not check whether Claude Code fires the hooks. That needs a restart and `claude --debug`.
+- Unit tests call the package in-process: the exploratory decision, thresholds, verdict parsing, the state record, the log records, the HTTP client, and every handler.
+- Seam tests run `hooks/hook.py` as Claude Code runs it. It runs as a subprocess with a JSON payload on stdin and environment variables set. Then stdout, stderr, exit code, the state file and the log are checked. They cover the gate's deny and warning cases, the reminder and the protocol, and the hint. They also cover the counter, the model pick, the daemon start with a fake interpreter, and the finaliser.
+- A package test checks:
+  - That `hooks.json` and `plugin.json` parse.
+  - That the five events are registered.
+  - That the worker carries the protocol's four rules word for word.
+  - That the protocol's model table matches the gate's default list.
+  - That the protocol has exactly one reminder line.
+  - That the tool-neutral instructions name no model.
+
+The router server itself has no automated test, because it needs the checkpoint. The health and route checks under "Install the router" are its smoke test.
+
+The tests do not check whether Claude Code fires the hooks. That needs a restart and `claude --debug`.

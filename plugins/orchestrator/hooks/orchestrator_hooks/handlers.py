@@ -1,0 +1,189 @@
+"""One function per hook event, built from small steps.
+
+Each router step runs through guarded(), so a failing router step never
+removes the output of an earlier step, such as the protocol or the reminder.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Callable, Dict, List, Mapping, Optional
+
+from . import payload as hook_payload
+from . import gate, records, rules, state
+from .client import Answer, RouterClient
+from .config import Config, current_dir
+from .daemon import start_router
+from .guard import guarded
+from .messages import COUNTER_TEXT, HINT_TEXT, PROTOCOL_FALLBACK, REMINDER_FALLBACK, REMINDER_MARK
+from .model_pick import model_pick
+from .output import PREFIX, HookResult, block_stderr, lines, pre_tool_use, pre_tool_use_deny
+
+
+def run(event: str, payload: Dict[str, Any], env: Mapping[str, str]) -> HookResult:
+    """Handle one hook event. Unknown events and the off switch give no output."""
+    handler = HANDLERS.get(event)
+    if handler is None:
+        return HookResult()
+    config = Config.from_env(env)
+    if config.off:
+        return HookResult()
+    return handler(payload, env, config)
+
+
+def debug_capture(event: str, raw: str, env: Mapping[str, str]) -> None:
+    """Append the raw agent-call payload to the ORCHESTRATOR_DEBUG file, as the bash gate did."""
+    config = Config.from_env(env)
+    if event != "agent-call" or config.off or not config.debug_file:
+        return
+    try:
+        with open(config.debug_file, "a", encoding="utf-8") as handle:
+            handle.write(raw + "\n")
+    except Exception:
+        pass
+
+
+# Session start: load protocol, router start.
+
+def session_start(payload: Dict[str, Any], env: Mapping[str, str], config: Config) -> HookResult:
+    protocol = config.protocol_text()
+    out = PROTOCOL_FALLBACK + "\n" if protocol is None else protocol
+    if not config.router_off:
+        started = guarded(lambda: start_router(config), None)
+        if started:
+            out += ("" if out.endswith("\n") or not out else "\n") + started + "\n"
+    return HookResult(stdout=out)
+
+
+# Prompt: reminder, finalise previous turn, route verdict, new state, log prompt, hint.
+
+def prompt(payload: Dict[str, Any], env: Mapping[str, str], config: Config) -> HookResult:
+    out = [reminder_line(config)]
+    if not config.router_off:
+        hint = guarded(lambda: _route_prompt(payload, env, config), None)
+        if hint:
+            out.append(hint)
+    return lines(out)
+
+
+def reminder_line(config: Config) -> str:
+    """The protocol's "> Before you start:" line, or the fallback sentence."""
+    for line in (config.protocol_text() or "").splitlines():
+        if line.startswith(REMINDER_MARK):
+            return PREFIX + line[2:]
+    return PREFIX + REMINDER_FALLBACK
+
+
+def _route_prompt(payload: Dict[str, Any], env: Mapping[str, str], config: Config) -> Optional[str]:
+    session = hook_payload.session_id(payload)
+    path, last = state.load_for(config.state_dir, payload)
+    prompt_text = hook_payload.field_text(payload, "prompt")
+    previous = guarded(lambda: _finalise_previous(last, config), 0)
+    answer = guarded(lambda: RouterClient.from_config(config).route(prompt_text), Answer())
+    verdict = rules.parse_route_verdict(answer.body)
+    now = records.now_iso()
+    record = state.TurnState(
+        session_id=session, turn=previous + 1, turn_started=now, prompt=records.truncate(prompt_text),
+        route=verdict.route, route_conf=verdict.route_conf, tier=verdict.tier,
+        threshold=rules.threshold_for(verdict.route, env), server=answer.server)
+    guarded(lambda: state.save(path, record), False)
+    cwd = hook_payload.field_text(payload, "cwd") or current_dir()
+    guarded(lambda: records.append(config.log_file, records.PromptRecord(
+        session_id=session, turn=record.turn, cwd=cwd, text=prompt_text, verdict=verdict.to_dict(),
+        latency_ms=answer.latency_ms, server=answer.server, ts=now), config.log_off), None)
+    if verdict.route != "delegate":
+        return None
+    return HINT_TEXT.format(conf=verdict.route_conf, tier=verdict.tier)
+
+
+def _finalise_previous(previous: Optional[state.TurnState], config: Config) -> int:
+    """Log the outcome of the last turn when the stop hook did not. Its turn number."""
+    if previous is None:
+        return 0
+    if not previous.finalized:
+        _log_outcome(previous, "next_prompt", config)
+    return previous.turn
+
+
+def _log_outcome(record: state.TurnState, source: str, config: Config) -> None:
+    records.append(config.log_file, records.PromptOutcomeRecord(
+        session_id=record.session_id, turn=record.turn, n_exploratory=record.n_exploratory,
+        n_agent=record.n_agent, n_tool=record.n_tool, warned=record.warned, source=source), config.log_off)
+
+
+# Agent call: gate, model pick.
+
+def agent_call(payload: Dict[str, Any], env: Mapping[str, str], config: Config) -> HookResult:
+    if payload.get("tool_name") not in ("Agent", "Task"):
+        return HookResult()
+    verdict = gate.check(hook_payload.tool_input(payload), config.models)
+    if verdict.deny:
+        return block_stderr(verdict.deny)
+    pick = None
+    if not config.router_off and not hook_payload.field_text(payload, "agent_id"):
+        pick = guarded(lambda: model_pick(payload, config), None)
+    model_set = pick is not None and pick.updated_input is not None
+    messages: List[str] = []
+    contexts: List[str] = []
+    # The missing-model and unknown-model warnings are stale when the router set a model. A fork warning stands.
+    if verdict.warning and not (verdict.about_model and model_set):
+        messages.append(verdict.warning)
+        contexts.append(verdict.warning)
+    if pick and pick.message:
+        messages.append(pick.message)
+        if pick.tell_claude:
+            contexts.append(pick.message)
+    return pre_tool_use(messages, contexts, pick.updated_input if pick else None)
+
+
+# Tool call: exploration counter.
+
+def tool_call(payload: Dict[str, Any], env: Mapping[str, str], config: Config) -> HookResult:
+    if config.router_off or hook_payload.field_text(payload, "agent_id"):
+        return HookResult()
+    return guarded(lambda: _count(payload, config), HookResult())
+
+
+def _count(payload: Dict[str, Any], config: Config) -> HookResult:
+    path, current = state.load_for(config.state_dir, payload)
+    if current is None:
+        return HookResult()
+    tool = hook_payload.field_text(payload, "tool_name")
+    current.n_tool += 1
+    if rules.is_exploratory(tool, hook_payload.field_text(payload, "tool_input", "command")):
+        current.n_exploratory += 1
+    if current.n_exploratory <= current.threshold or current.warned:
+        state.save(path, current)
+        return HookResult()
+    current.warned = True
+    if not state.save(path, current):
+        return HookResult()
+    message = COUNTER_TEXT.format(count=current.n_exploratory, threshold=current.threshold, route=current.route)
+    guarded(lambda: records.append(config.log_file, records.ExplorationWarningRecord(
+        session_id=current.session_id, turn=current.turn, n_exploratory=current.n_exploratory,
+        threshold=current.threshold, tool=tool, blocked=config.block), config.log_off), None)
+    if config.block:
+        return pre_tool_use_deny(message)
+    return pre_tool_use([message], [message])
+
+
+# Stop: finalise turn.
+
+def stop(payload: Dict[str, Any], env: Mapping[str, str], config: Config) -> HookResult:
+    if not config.router_off:
+        guarded(lambda: _finalise(payload, config), None)
+    return HookResult()
+
+
+def _finalise(payload: Dict[str, Any], config: Config) -> None:
+    path, current = state.load_for(config.state_dir, payload)
+    if current is None or current.finalized:
+        return
+    current.finalized = True
+    # Mark first, so a failed write never leads to a second outcome record.
+    if state.save(path, current):
+        _log_outcome(current, "stop", config)
+
+
+HANDLERS: Dict[str, Callable[[Dict[str, Any], Mapping[str, str], Config], HookResult]] = {
+    "session-start": session_start, "prompt": prompt, "agent-call": agent_call, "tool-call": tool_call, "stop": stop,
+}
