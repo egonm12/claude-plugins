@@ -73,8 +73,10 @@ elif [ -z "$model" ]; then
   warning="This Agent call sets no model. The effective model comes from the agent definition or the configured default, which this hook cannot read. Set model explicitly so the choice is stated, or confirm the agent definition pins a non-Fable model."
 fi
 
+# additionalContext reaches Claude. systemMessage is shown to the user only.
 if [ -n "$warning" ]; then
-  jq -n --arg msg "orchestrator: $warning" '{systemMessage: $msg}'
+  jq -n --arg msg "orchestrator: $warning" \
+    '{systemMessage: $msg, hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: $msg}}'
 fi
 
 exit 0

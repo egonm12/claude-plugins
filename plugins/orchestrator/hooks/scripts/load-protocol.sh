@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# SessionStart and PreCompact. Loads the full protocol once, so the per-turn
-# reminder can stay short.
+# SessionStart. Loads the full protocol into Claude's context. SessionStart
+# also fires after compaction, with source "compact", so this reloads it then.
 # No "set -e": this hook must fail open. A broken check should never block delegation.
 set -uo pipefail
 cat >/dev/null 2>&1 || true
