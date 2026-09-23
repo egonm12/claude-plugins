@@ -149,6 +149,49 @@ class VerdictTest(unittest.TestCase):
         self.assertEqual(tier.to_dict(), {"tier": "haiku", "tier_conf": 0.4, "tier_probs": {"haiku": 0.4}})
 
 
+def route(route: str, probs: dict, by_regex: bool = False) -> rules.RouteVerdict:
+    return rules.RouteVerdict(route=route, route_probs=probs, by_regex=by_regex)
+
+
+class MarginTest(unittest.TestCase):
+    def test_margin_is_the_gap_between_delegate_and_self(self) -> None:
+        self.assertEqual(rules.route_margin({"delegate": 0.4721, "self": 0.5279}), 0.0558)
+        self.assertEqual(rules.route_margin({"delegate": 0.66, "self": 0.34}), 0.32)
+
+    def test_no_margin_without_both_numbers(self) -> None:
+        for probs in ({}, {"delegate": 0.56}, {"delegate": 0.5, "self": "x"}, {"delegate": True, "self": 0.5}):
+            self.assertIsNone(rules.route_margin(probs), probs)
+
+    def test_close_verdict_is_unsure(self) -> None:
+        self.assertEqual(rules.effective_route(route("self", {"delegate": 0.4721, "self": 0.5279}), 0.15), "unsure")
+        self.assertEqual(rules.effective_route(route("delegate", {"delegate": 0.55, "self": 0.45}), 0.15), "unsure")
+
+    def test_clear_verdict_keeps_its_route(self) -> None:
+        self.assertEqual(rules.effective_route(route("delegate", {"delegate": 0.66, "self": 0.34}), 0.15), "delegate")
+        self.assertEqual(rules.effective_route(route("self", {"delegate": 0.35, "self": 0.65}), 0.15), "self")
+
+    def test_margin_on_the_limit_is_not_unsure(self) -> None:
+        self.assertEqual(rules.effective_route(route("self", {"delegate": 0.25, "self": 0.75}), 0.5), "self")
+
+    def test_regex_verdict_and_missing_probs_keep_their_route(self) -> None:
+        self.assertEqual(rules.effective_route(route("skill", {"delegate": 0.5, "self": 0.5}, True), 0.15), "skill")
+        self.assertEqual(rules.effective_route(route("delegate", {}), 0.15), "delegate")
+        self.assertEqual(rules.effective_route(route("none", {}), 0.15), "none")
+
+
+class ShortPromptTest(unittest.TestCase):
+    def test_short_follow_ups(self) -> None:
+        for text in ("continue", "yes do it", "go on", "  go   on \n"):
+            self.assertTrue(rules.is_short(text, 3), text)
+
+    def test_longer_or_empty_prompts(self) -> None:
+        for text in ("yes, branch and open a PR", "please do it now", "", "   "):
+            self.assertFalse(rules.is_short(text, 3), text)
+
+    def test_zero_disables(self) -> None:
+        self.assertFalse(rules.is_short("continue", 0))
+
+
 class NamedSubagentTest(unittest.TestCase):
     def test_full_type(self) -> None:
         self.assertTrue(rules.user_named_subagent(

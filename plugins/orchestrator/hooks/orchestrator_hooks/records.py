@@ -10,7 +10,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Union
+from typing import Any, Dict, Optional, Union
 
 from .config import TEXT_LIMIT
 
@@ -34,13 +34,18 @@ class PromptRecord:
     verdict: Dict[str, Any]
     latency_ms: int
     server: str
+    # The route the hooks acted on, the delegate-self gap, and the turn a short follow-up took its route from.
+    route_effective: str = "none"
+    margin: Optional[float] = None
+    carried_from_turn: Optional[int] = None
     ts: str = field(default_factory=now_iso)
 
     def to_json(self) -> Dict[str, Any]:
         return {
             "kind": "prompt", "ts": self.ts, "session_id": self.session_id, "turn": self.turn,
             "cwd": self.cwd, "text": truncate(self.text), "verdict": self.verdict,
-            "latency_ms": self.latency_ms, "server": self.server,
+            "route_effective": self.route_effective, "margin": self.margin,
+            "carried_from_turn": self.carried_from_turn, "latency_ms": self.latency_ms, "server": self.server,
         }
 
 

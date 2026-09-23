@@ -21,6 +21,7 @@ class TurnState:
     turn: int = 0
     turn_started: str = ""
     prompt: str = ""
+    # The effective route: "unsure" for a close verdict, or the previous turn's route for a short follow-up.
     route: str = "none"
     route_conf: float = 0
     tier: str = "none"

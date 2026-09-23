@@ -6,6 +6,7 @@ pass a plain dict instead of changing os.environ.
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,8 @@ DEFAULT_MODELS = "opus,sonnet,haiku"
 DEFAULT_TIMEOUT_MS = 1500
 MIN_TIMEOUT_MS = 100
 HEALTH_TIMEOUT_S = 1.0
+DEFAULT_ROUTE_MARGIN = 0.15
+DEFAULT_CARRY_WORDS = 3
 
 
 def env_flag(env: Mapping[str, str], name: str) -> bool:
@@ -31,6 +34,15 @@ def env_int(env: Mapping[str, str], name: str, default: int) -> int:
     if value.isascii() and value.isdigit():
         return int(value)
     return default
+
+
+def env_float(env: Mapping[str, str], name: str, default: float) -> float:
+    """The variable as a finite number of 0 or more, or the default when it is not one."""
+    try:
+        value = float(env.get(name, ""))
+    except ValueError:
+        return default
+    return value if math.isfinite(value) and value >= 0 else default
 
 
 def data_dir(env: Mapping[str, str]) -> Path:
@@ -59,6 +71,8 @@ class Config:
     block: bool
     log_off: bool
     stub: Optional[str]
+    route_margin: float
+    carry_words: int
     data_dir: Path
     plugin_root: str
 
@@ -78,6 +92,8 @@ class Config:
             block=env_flag(env, "ORCHESTRATOR_EXPLORATION_BLOCK"),
             log_off=env_flag(env, "ORCHESTRATOR_LOG_OFF"),
             stub=env.get("ORCHESTRATOR_ROUTER_STUB"),
+            route_margin=env_float(env, "ORCHESTRATOR_ROUTE_MARGIN", DEFAULT_ROUTE_MARGIN),
+            carry_words=env_int(env, "ORCHESTRATOR_CARRY_WORDS", DEFAULT_CARRY_WORDS),
             data_dir=directory,
             plugin_root=env.get("CLAUDE_PLUGIN_ROOT", ""),
         )

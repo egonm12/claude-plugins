@@ -37,7 +37,7 @@ TS_PATTERN = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"
 # Router answers for the stub, copied from router.test.sh.
 STUB_DELEGATE = json.dumps({
     "route": "delegate", "route_conf": 0.123,
-    "route_probs": {"delegate": 0.56, "self": 0.44},
+    "route_probs": {"delegate": 0.66, "self": 0.34},
     "tier": "sonnet", "tier_conf": 0.2,
     "tier_probs": {"opus": 0.3, "sonnet": 0.5, "haiku": 0.2},
     "latency_ms": 114.2, "by_regex": False,
@@ -53,6 +53,14 @@ STUB_SKILL = json.dumps({
     "route": "skill", "route_conf": 1.0, "route_probs": {},
     "tier": "none", "tier_conf": 0.0, "tier_probs": {},
     "latency_ms": 0.0, "by_regex": True,
+})
+# The real verdict that motivated the unsure route: a clear investigation scored as self.
+STUB_CLOSE_SELF = json.dumps({
+    "route": "self", "route_conf": 0.0279,
+    "route_probs": {"delegate": 0.4721, "self": 0.5279},
+    "tier": "sonnet", "tier_conf": 0.2,
+    "tier_probs": {"opus": 0.3, "sonnet": 0.5, "haiku": 0.2},
+    "latency_ms": 97.0, "by_regex": False,
 })
 STUB_TIER_HAIKU = json.dumps({
     "tier": "haiku", "tier_conf": 0.4,
@@ -251,7 +259,7 @@ class SeamCase(unittest.TestCase):
     def hook(self, event: str, payload: Union[Dict[str, Any], str], plugin_root=None, **env: str) -> Result:
         return run_hook(event, payload, env=env, data_dir=self.data, plugin_root=plugin_root)
 
-    def start_turn(self, session: str, stub: str, prompt: str = "a prompt", **env: str) -> Result:
+    def start_turn(self, session: str, stub: str, prompt: str = "look into this for me", **env: str) -> Result:
         result = self.hook("prompt", prompt_payload(session, prompt), ORCHESTRATOR_ROUTER_STUB=stub, **env)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result
@@ -507,7 +515,7 @@ class PromptHintTest(SeamCase):
                 ("s1", 1, "/work", "why does the build fail", "delegate", "sonnet", False),
             )
         with self.subTest("hint log: probs kept"):
-            self.assertEqual(rec["verdict"]["route_probs"]["delegate"], 0.56)
+            self.assertEqual(rec["verdict"]["route_probs"]["delegate"], 0.66)
         with self.subTest("hint log: latency is a whole number"):
             self.assertIsInstance(rec["latency_ms"], int)
         with self.subTest("hint log: ts"):
@@ -515,7 +523,8 @@ class PromptHintTest(SeamCase):
 
     def test_hint_second_prompt(self) -> None:
         self.start_turn("s1", STUB_DELEGATE)
-        result = self.hook("prompt", prompt_payload("s1", "thanks"), ORCHESTRATOR_ROUTER_STUB=STUB_SELF)
+        result = self.hook("prompt", prompt_payload("s1", "thanks, that answers my question"),
+                           ORCHESTRATOR_ROUTER_STUB=STUB_SELF)
         self.assertOk(result)
         self.assertEqual(result.lines, [protocol_reminder()])
         st = self.state("s1")
@@ -524,7 +533,7 @@ class PromptHintTest(SeamCase):
         with self.subTest("hint second prompt: threshold after self"):
             self.assertEqual(st["threshold"], 5)
         with self.subTest("hint second prompt: prompt replaced"):
-            self.assertEqual(st["prompt"], "thanks")
+            self.assertEqual(st["prompt"], "thanks, that answers my question")
         outcomes = self.log("prompt_outcome")
         with self.subTest("hint second prompt: outcome"):
             self.assertEqual(
@@ -636,6 +645,63 @@ class PromptHintTest(SeamCase):
         self.assertLess(elapsed, 3.0, f"took {elapsed:.2f} s")
         self.assertEqual(self.state("s1")["server"], "down")
         self.assertEqual(self.log("prompt")[0]["server"], "down")
+
+
+class PromptUnsureAndCarryTest(SeamCase):
+    def test_close_verdict_is_unsure(self) -> None:
+        result = self.start_turn("s1", STUB_CLOSE_SELF, prompt="find out why the nightly job stopped")
+        self.assertEqual(result.lines, [protocol_reminder()])
+        st = self.state("s1")
+        self.assertEqual((st["route"], st["threshold"]), ("unsure", 3))
+        rec = self.log("prompt")[0]
+        self.assertEqual(rec["verdict"]["route"], "self")
+        self.assertEqual((rec["route_effective"], rec["margin"], rec["carried_from_turn"]), ("unsure", 0.0558, None))
+
+    def test_margin_setting(self) -> None:
+        self.start_turn("s1", STUB_CLOSE_SELF, ORCHESTRATOR_ROUTE_MARGIN="0.05")
+        self.assertEqual((self.state("s1")["route"], self.state("s1")["threshold"]), ("self", 5))
+        self.start_turn("s2", STUB_CLOSE_SELF, ORCHESTRATOR_ROUTE_MARGIN="high")
+        self.assertEqual(self.state("s2")["route"], "unsure")
+
+    def test_regex_verdict_is_never_unsure(self) -> None:
+        stub = json.dumps({"route": "skill", "route_conf": 1.0, "route_probs": {"delegate": 0.5, "self": 0.5},
+                           "tier": "none", "by_regex": True})
+        self.start_turn("s1", stub, prompt="/commit")
+        self.assertEqual(self.state("s1")["route"], "skill")
+        self.assertEqual(self.log("prompt")[0]["route_effective"], "skill")
+
+    def test_continue_carries_the_delegate_verdict(self) -> None:
+        self.start_turn("s1", STUB_DELEGATE, prompt="why does the build fail")
+        result = self.start_turn("s1", STUB_SELF, prompt="continue")
+        self.assertEqual(result.lines, [protocol_reminder(), DELEGATE_LINE])
+        st = self.state("s1")
+        self.assertEqual((st["turn"], st["route"], st["tier"], st["threshold"]), (2, "delegate", "sonnet", 2))
+        rec = self.log("prompt")[-1]
+        self.assertEqual((rec["verdict"]["route"], rec["verdict"]["tier"]), ("self", "haiku"))
+        self.assertEqual((rec["route_effective"], rec["carried_from_turn"]), ("delegate", 1))
+        self.assertEqual([r["kind"] for r in self.log()], ["prompt", "prompt_outcome", "prompt"])
+
+    def test_carried_threshold_drives_the_counter(self) -> None:
+        self.start_turn("s1", STUB_DELEGATE, prompt="why does the build fail")
+        self.start_turn("s1", STUB_SELF, prompt="go on")
+        for _ in range(2):
+            self.assertSilent(self.hook("tool-call", read_payload("s1")))
+        result = self.hook("tool-call", read_payload("s1"))
+        self.assertEqual(parse_json(result.stdout)["systemMessage"], exploration_msg(3, 2, "delegate"))
+
+    def test_six_words_do_not_carry(self) -> None:
+        self.start_turn("s1", STUB_DELEGATE, prompt="why does the build fail")
+        result = self.start_turn("s1", STUB_SELF, prompt="yes, branch and open a PR")
+        self.assertEqual(result.lines, [protocol_reminder()])
+        self.assertEqual((self.state("s1")["route"], self.state("s1")["threshold"]), ("self", 5))
+        self.assertIsNone(self.log("prompt")[-1]["carried_from_turn"])
+
+    def test_first_turn_and_carry_off(self) -> None:
+        self.start_turn("s1", STUB_SELF, prompt="continue")
+        self.assertIsNone(self.log("prompt")[-1]["carried_from_turn"])
+        self.start_turn("s2", STUB_DELEGATE, prompt="why does the build fail")
+        self.start_turn("s2", STUB_SELF, prompt="continue", ORCHESTRATOR_CARRY_WORDS="0")
+        self.assertEqual(self.state("s2")["route"], "self")
 
 
 # ---------------------------------------------------------------- agent-call: gate

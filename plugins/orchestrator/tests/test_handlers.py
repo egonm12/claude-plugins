@@ -20,7 +20,7 @@ from orchestrator_hooks import handlers  # noqa: E402
 from orchestrator_hooks.output import HookResult  # noqa: E402
 
 STUB_DELEGATE = json.dumps({
-    "route": "delegate", "route_conf": 0.123, "route_probs": {"delegate": 0.56, "self": 0.44},
+    "route": "delegate", "route_conf": 0.123, "route_probs": {"delegate": 0.66, "self": 0.34},
     "tier": "sonnet", "tier_conf": 0.2, "tier_probs": {"opus": 0.3, "sonnet": 0.5, "haiku": 0.2},
     "latency_ms": 114.2, "by_regex": False})
 STUB_SELF = json.dumps({
@@ -46,6 +46,16 @@ REPLACED_OPUS = 'orchestrator: the router set model "haiku" for this worker, rep
 WARN_3_2 = ("orchestrator router: 3 exploratory commands this turn, threshold 2 (verdict delegate). "
             "Hand the rest of the research to a worker.")
 TS_PATTERN = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"
+
+
+def route_stub(route: str, delegate: float, self_: float, by_regex: bool = False, tier: str = "opus") -> str:
+    return json.dumps({"route": route, "route_conf": 0.05, "route_probs": {"delegate": delegate, "self": self_},
+                       "tier": tier, "tier_conf": 0.3, "tier_probs": {}, "latency_ms": 99.0, "by_regex": by_regex})
+
+
+# The real verdict that motivated the unsure route: a clear investigation scored as self.
+STUB_CLOSE_SELF = route_stub("self", 0.4721, 0.5279)
+STUB_CLOSE_DELEGATE = route_stub("delegate", 0.55, 0.45)
 
 
 class HandlerCase(unittest.TestCase):
@@ -79,7 +89,7 @@ class HandlerCase(unittest.TestCase):
         rows = [json.loads(line) for line in path.read_text().splitlines()]
         return [row for row in rows if kind is None or row["kind"] == kind]
 
-    def start_turn(self, session: str, stub: str, prompt: str = "a prompt", **env: str) -> HookResult:
+    def start_turn(self, session: str, stub: str, prompt: str = "look into this for me", **env: str) -> HookResult:
         payload = {"session_id": session, "prompt": prompt, "cwd": "/work"}
         return self.run_event("prompt", payload, ORCHESTRATOR_ROUTER_STUB=stub, **env)
 
@@ -349,7 +359,7 @@ class PromptTest(HandlerCase):
         record = self.log("prompt")[0]
         self.assertEqual((record["session_id"], record["turn"], record["cwd"], record["text"], record["server"],
                           record["latency_ms"]), ("s1", 1, "/work", "why does the build fail", "stub", 0))
-        self.assertEqual(record["verdict"]["route_probs"], {"delegate": 0.56, "self": 0.44})
+        self.assertEqual(record["verdict"]["route_probs"], {"delegate": 0.66, "self": 0.34})
 
     def test_silent_on_self_skill_and_down(self) -> None:
         for session, stub, expected in (("a", STUB_SELF, ("self", 5)), ("b", STUB_SKILL, ("skill", 3)),
@@ -401,6 +411,125 @@ class PromptTest(HandlerCase):
         self.run_event("prompt", payload, ORCHESTRATOR_ROUTER_TIMEOUT_MS="200")
         self.assertLess(time.perf_counter() - start, 2.0)
         self.assertEqual(self.state("s1")["server"], "down")
+
+
+class UnsureTest(HandlerCase):
+    def effective(self, session: str) -> Dict[str, Any]:
+        record = [r for r in self.log("prompt") if r["session_id"] == session][-1]
+        return {"route": self.state(session)["route"], "threshold": self.state(session)["threshold"],
+                "raw": record["verdict"]["route"], "effective": record["route_effective"],
+                "margin": record["margin"], "carried": record["carried_from_turn"]}
+
+    def test_close_verdict_is_unsure_with_the_default_threshold_and_no_hint(self) -> None:
+        for session, stub, raw in (("a", STUB_CLOSE_SELF, "self"), ("b", STUB_CLOSE_DELEGATE, "delegate")):
+            self.assertEqual(self.start_turn(session, stub).stdout, REMINDER + "\n")
+            self.assertEqual(self.effective(session)["route"], "unsure")
+            self.assertEqual(self.effective(session)["threshold"], 3)
+            self.assertEqual(self.effective(session)["raw"], raw)
+            self.assertEqual(self.effective(session)["effective"], "unsure")
+        self.assertEqual(self.effective("a")["margin"], 0.0558)
+        self.assertEqual(self.effective("a")["carried"], None)
+
+    def test_unsure_threshold_uses_the_default_override(self) -> None:
+        self.start_turn("s1", STUB_CLOSE_SELF, ORCHESTRATOR_THRESHOLD_DEFAULT="1", ORCHESTRATOR_THRESHOLD_SELF="9")
+        self.assertEqual(self.state("s1")["threshold"], 1)
+
+    def test_clear_verdicts_keep_their_route_and_log_the_margin(self) -> None:
+        self.start_turn("a", STUB_DELEGATE)
+        self.start_turn("b", STUB_SELF)
+        self.assertEqual({k: self.effective("a")[k] for k in ("route", "effective", "margin")},
+                         {"route": "delegate", "effective": "delegate", "margin": 0.32})
+        self.assertEqual({k: self.effective("b")[k] for k in ("route", "effective", "margin")},
+                         {"route": "self", "effective": "self", "margin": 0.3})
+
+    def test_margin_setting(self) -> None:
+        cases = (("a", "0.05", "self"), ("b", "0", "self"), ("c", "abc", "unsure"), ("d", "-1", "unsure"),
+                 ("e", "", "unsure"), ("f", "nan", "unsure"), ("g", "0.1", "unsure"))
+        for session, value, want in cases:
+            self.start_turn(session, STUB_CLOSE_SELF, ORCHESTRATOR_ROUTE_MARGIN=value)
+            self.assertEqual(self.state(session)["route"], want, value)
+        self.start_turn("h", STUB_DELEGATE, ORCHESTRATOR_ROUTE_MARGIN="0.5")
+        self.assertEqual(self.state("h")["route"], "unsure")
+
+    def test_regex_verdict_is_never_unsure(self) -> None:
+        self.start_turn("s1", route_stub("skill", 0.5, 0.5, by_regex=True), prompt="/commit")
+        self.assertEqual((self.state("s1")["route"], self.effective("s1")["effective"]), ("skill", "skill"))
+
+    def test_missing_probs_keep_the_router_route(self) -> None:
+        stub = json.dumps({"route": "delegate", "route_conf": 0.123, "tier": "sonnet", "by_regex": False})
+        self.assertEqual(self.start_turn("s1", stub).stdout, REMINDER + "\n" + HINT + "\n")
+        self.assertEqual((self.state("s1")["route"], self.effective("s1")["margin"]), ("delegate", None))
+        self.start_turn("s2", "down")
+        self.assertEqual((self.effective("s2")["effective"], self.effective("s2")["margin"]), ("none", None))
+
+    def test_counter_names_the_unsure_route(self) -> None:
+        self.start_turn("s1", STUB_CLOSE_SELF)
+        for _ in range(3):
+            self.assert_empty(self.read("s1"))
+        self.assertIn("threshold 3 (verdict unsure)", self.output(self.read("s1"))["systemMessage"])
+
+
+class CarryTest(HandlerCase):
+    def last_prompt(self) -> Dict[str, Any]:
+        return self.log("prompt")[-1]
+
+    def test_short_follow_up_carries_a_delegate_verdict_and_its_hint(self) -> None:
+        self.start_turn("s1", STUB_DELEGATE, prompt="why does the build fail on main")
+        for turn, text in ((2, "continue"), (3, "yes do it"), (4, "go on")):
+            result = self.start_turn("s1", STUB_SELF, prompt=text)
+            self.assertEqual(result.stdout, REMINDER + "\n" + HINT + "\n", text)
+            state = self.state("s1")
+            self.assertEqual((state["turn"], state["route"], state["tier"], state["threshold"], state["prompt"]),
+                             (turn, "delegate", "sonnet", 2, text))
+            record = self.last_prompt()
+            self.assertEqual(record["verdict"]["route"], "self")
+            self.assertEqual((record["route_effective"], record["carried_from_turn"]), ("delegate", turn - 1))
+            self.assertEqual(record["margin"], 0.3)
+
+    def test_longer_prompt_is_judged_on_its_own(self) -> None:
+        self.start_turn("s1", STUB_DELEGATE)
+        result = self.start_turn("s1", STUB_SELF, prompt="yes, branch and open a PR")
+        self.assertEqual(result.stdout, REMINDER + "\n")
+        self.assertEqual((self.state("s1")["route"], self.state("s1")["threshold"]), ("self", 5))
+        self.assertIsNone(self.last_prompt()["carried_from_turn"])
+
+    def test_first_turn_never_carries(self) -> None:
+        self.start_turn("s1", STUB_SELF, prompt="continue")
+        self.assertEqual((self.state("s1")["route"], self.last_prompt()["carried_from_turn"]), ("self", None))
+
+    def test_self_and_unsure_carry_without_a_hint(self) -> None:
+        self.start_turn("a", STUB_SELF)
+        self.start_turn("b", STUB_CLOSE_SELF)
+        for session in ("a", "b"):
+            self.assertEqual(self.start_turn(session, STUB_DELEGATE, prompt="go on").stdout, REMINDER + "\n")
+        self.assertEqual([(self.state(s)["route"], self.state(s)["tier"], self.state(s)["threshold"]) for s in "ab"],
+                         [("self", "haiku", 5), ("unsure", "opus", 3)])
+
+    def test_no_carry_after_a_turn_without_a_verdict(self) -> None:
+        self.start_turn("s1", "down")
+        self.start_turn("s1", STUB_SELF, prompt="continue")
+        self.assertEqual((self.state("s1")["route"], self.last_prompt()["carried_from_turn"]), ("self", None))
+
+    def test_slash_command_is_not_carried_over(self) -> None:
+        self.start_turn("s1", STUB_DELEGATE)
+        self.start_turn("s1", STUB_SKILL, prompt="/commit")
+        self.assertEqual((self.state("s1")["route"], self.last_prompt()["carried_from_turn"]), ("skill", None))
+
+    def test_carry_words_setting(self) -> None:
+        cases = (("a", "0", "continue", "self"), ("b", "6", "yes, branch and open a PR", "delegate"),
+                 ("c", "x", "yes do it", "delegate"), ("d", "x", "please do it now", "self"))
+        for session, value, text, want in cases:
+            self.start_turn(session, STUB_DELEGATE)
+            self.start_turn(session, STUB_SELF, prompt=text, ORCHESTRATOR_CARRY_WORDS=value)
+            self.assertEqual(self.state(session)["route"], want, (value, text))
+
+    def test_outcome_of_the_previous_turn_is_still_logged(self) -> None:
+        self.start_turn("s1", STUB_DELEGATE)
+        self.read("s1")
+        self.start_turn("s1", STUB_SELF, prompt="continue")
+        self.assertEqual([(o["source"], o["turn"], o["n_tool"]) for o in self.log("prompt_outcome")],
+                         [("next_prompt", 1, 1)])
+        self.assertEqual([r["kind"] for r in self.log()], ["prompt", "prompt_outcome", "prompt"])
 
 
 class StopTest(HandlerCase):
@@ -492,7 +621,8 @@ class CounterTest(HandlerCase):
 
 class LogKindsTest(HandlerCase):
     expected = {
-        "prompt": ["kind", "ts", "session_id", "turn", "cwd", "text", "verdict", "latency_ms", "server"],
+        "prompt": ["kind", "ts", "session_id", "turn", "cwd", "text", "verdict", "route_effective", "margin",
+                   "carried_from_turn", "latency_ms", "server"],
         "prompt_outcome": ["kind", "ts", "session_id", "turn", "n_exploratory", "n_agent", "n_tool", "warned",
                            "source"],
         "agent_call": ["kind", "ts", "session_id", "turn", "tool", "subagent_type", "description", "prompt",

@@ -54,7 +54,7 @@ def session_start(payload: Dict[str, Any], env: Mapping[str, str], config: Confi
     return HookResult(stdout=out)
 
 
-# Prompt: reminder, finalise previous turn, route verdict, new state, log prompt, hint.
+# Prompt: reminder, finalise previous turn, route verdict, effective route, new state, log prompt, hint.
 
 def prompt(payload: Dict[str, Any], env: Mapping[str, str], config: Config) -> HookResult:
     out = [reminder_line(config)]
@@ -80,19 +80,33 @@ def _route_prompt(payload: Dict[str, Any], env: Mapping[str, str], config: Confi
     previous = guarded(lambda: _finalise_previous(last, config), 0)
     answer = guarded(lambda: RouterClient.from_config(config).route(prompt_text), Answer())
     verdict = rules.parse_route_verdict(answer.body)
+    route, route_conf, tier = rules.effective_route(verdict, config.route_margin), verdict.route_conf, verdict.tier
+    carried = _carry_source(last, verdict, prompt_text, config)
+    if carried is not None:
+        route, route_conf, tier = carried.route, carried.route_conf, carried.tier
     now = records.now_iso()
     record = state.TurnState(
         session_id=session, turn=previous + 1, turn_started=now, prompt=records.truncate(prompt_text),
-        route=verdict.route, route_conf=verdict.route_conf, tier=verdict.tier,
-        threshold=rules.threshold_for(verdict.route, env), server=answer.server)
+        route=route, route_conf=route_conf, tier=tier, threshold=rules.threshold_for(route, env),
+        server=answer.server)
     guarded(lambda: state.save(path, record), False)
     cwd = hook_payload.field_text(payload, "cwd") or current_dir()
     guarded(lambda: records.append(config.log_file, records.PromptRecord(
         session_id=session, turn=record.turn, cwd=cwd, text=prompt_text, verdict=verdict.to_dict(),
-        latency_ms=answer.latency_ms, server=answer.server, ts=now), config.log_off), None)
-    if verdict.route != "delegate":
+        latency_ms=answer.latency_ms, server=answer.server, route_effective=route,
+        margin=rules.route_margin(verdict.route_probs), carried_from_turn=carried.turn if carried else None,
+        ts=now), config.log_off), None)
+    if route != "delegate":
         return None
-    return HINT_TEXT.format(conf=verdict.route_conf, tier=verdict.tier)
+    return HINT_TEXT.format(conf=route_conf, tier=tier)
+
+
+def _carry_source(last: Optional[state.TurnState], verdict: rules.RouteVerdict, text: str,
+                  config: Config) -> Optional[state.TurnState]:
+    """The previous turn when a short follow-up such as "continue" takes its route. A slash command never does."""
+    if last is None or last.route not in rules.EFFECTIVE_ROUTES or verdict.by_regex:
+        return None
+    return last if rules.is_short(text, config.carry_words) else None
 
 
 def _finalise_previous(previous: Optional[state.TurnState], config: Config) -> int:
