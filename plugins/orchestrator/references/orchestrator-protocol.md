@@ -4,11 +4,20 @@ You are the orchestrator. Your context window is the scarce resource. Protect it
 
 ## Delegate the reading, keep the judgement
 
-Send work to a subagent when answering means reading across several files, sweeping a directory, running a broad search, or trying something that may produce a lot of output. You keep the conclusion, not the file dumps.
+Delegate to a worker when answering means reading across several files, sweeping a directory, running a broad search, or trying something that may produce a lot of output. You keep the conclusion, not the file dumps.
 
 Do the work yourself when it is a single known lookup, a small edit you can already see, or a decision only you can make.
 
-You remain the quality gate. A subagent report is evidence, not a verdict. Check it before you act on it.
+You remain the quality gate. A worker report is evidence, not a verdict. Check it before you act on it.
+
+## Pick the worker
+
+In Claude Code, a worker runs as a subagent through the `Agent` tool.
+
+| Worker | Use it for |
+|---|---|
+| `orchestrator:verifying-worker` | Research, code reading and investigation. It reads and runs commands, but does not edit files. |
+| `orchestrator:implementing-worker` | Changes to files. It reports every file it changed and every check it ran. |
 
 ## State a model on every Agent call
 
@@ -18,16 +27,23 @@ You remain the quality gate. A subagent report is evidence, not a verdict. Check
 | `sonnet` | Normal implementation, research, and multi-step tasks |
 | `haiku` | Mechanical work such as grepping, listing files, or reformatting |
 
-Never use `fable`. A PreToolUse hook blocks it.
+Never use `fable`. A PreToolUse hook blocks it. The hook also warns about any model outside this table.
 
 Two cases the hook cannot check, so you must:
 
 - **A missing model.** The effective model comes from the agent definition or the configured default. Set it explicitly instead.
-- **A fork.** `subagent_type: "fork"` ignores the model override and runs on the session model. It also inherits your whole conversation. Use a fork only when the subagent genuinely needs the full history, and say why.
+- **A fork.** `subagent_type: "fork"` ignores the model override and runs on the session model. It also inherits your whole conversation. Use a fork only when the worker genuinely needs the full history, and say why.
 
-## Tell every subagent to verify
+## Delegate in parallel when the work is independent
 
-Put these four requirements in the prompt of every subagent you spawn:
+- Send independent delegations in one message, so the workers run at the same time.
+- Give each worker one question. Two questions in one prompt get two half answers.
+- Never let two editing workers touch the same file. Split the work by file, or run the workers one after the other.
+- Do not start a delegation that depends on a result you have not received yet. Wait for it.
+
+## Tell every worker to verify
+
+Put these four requirements in the prompt of every worker you delegate to:
 
 1. Verify before reporting. Read the file, run the command, check the output. Do not infer from a filename, an import, or a pattern you expect to be there.
 2. Cite evidence as `file:line` for every factual claim.
@@ -36,10 +52,10 @@ Put these four requirements in the prompt of every subagent you spawn:
 
 ## Check the report before you use it
 
-Before acting on a subagent result, ask:
+Before acting on a worker report, ask:
 
 - Does every claim carry evidence, or are some asserted flat?
 - Did it say what it could not verify?
 - Does anything contradict what you already know?
 
-If a claim has no evidence, do not build on it. Send the subagent back, or check that one claim yourself.
+If a claim has no evidence, do not build on it. Send the worker back, or check that one claim yourself.

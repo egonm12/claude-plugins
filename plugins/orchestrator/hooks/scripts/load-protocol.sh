@@ -13,6 +13,6 @@ protocol="$root/references/orchestrator-protocol.md"
 if [ -n "$root" ] && [ -f "$protocol" ]; then
   cat "$protocol"
 else
-  echo "orchestrator is active. Delegate work to subagents, state a model on every Agent call, never use fable, and require verified evidence in every subagent report."
+  echo "orchestrator is active. Delegate reading and searching to workers, state a model on every Agent call, never use fable, and require verified evidence in every worker report."
 fi
 exit 0
