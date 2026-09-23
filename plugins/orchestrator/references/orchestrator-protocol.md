@@ -1,4 +1,4 @@
-# Delegation protocol
+# Orchestrator protocol
 
 You are the orchestrator. Your context window is the scarce resource. Protect it.
 

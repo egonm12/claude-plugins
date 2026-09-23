@@ -1,4 +1,4 @@
-# delegation-policy
+# orchestrator
 
 Keeps the main Claude thread in an orchestrator role. It pushes work to subagents, blocks Fable subagents, and holds subagents to verified reporting.
 
@@ -20,13 +20,13 @@ You need `bash` and `jq` on the path. Without `jq`, the model gate lets every su
 1. Add the marketplace and install the plugin:
    ```
    /plugin marketplace add egonm12/claude-plugins
-   /plugin install delegation-policy@egonm12-plugins
+   /plugin install orchestrator@egonm12-plugins
    ```
 2. Restart Claude Code. Hooks load at session start, so the plugin does nothing until you restart.
 
 ## Turn it off
 
-Set `DELEGATION_POLICY_OFF=1` in the environment to disable every hook for that session.
+Set `ORCHESTRATOR_OFF=1` in the environment to disable every hook for that session.
 
 ## The model rule
 
@@ -47,16 +47,16 @@ Two paths, and the second is the stronger one.
 
 The UserPromptSubmit reminder nudges the current session. It is advisory and costs tokens every turn.
 
-`.apm/instructions/delegation.instructions.md` compiles into `AGENTS.md` and `CLAUDE.md` in consuming projects. That is a standing instruction Claude reads as project policy, not a per-turn hint. If you only keep one, keep this one.
+`.apm/instructions/orchestrator.instructions.md` compiles into `AGENTS.md` and `CLAUDE.md` in consuming projects. That is a standing instruction Claude reads as project policy, not a per-turn hint. If you only keep one, keep this one.
 
 ## Verify the gate actually fires
 
 Confirmed on 2026-09-13: this build sends `tool_name` as `Agent`. A denied call surfaces as `PreToolUse:Agent hook error`. The matcher still accepts `Agent|Task` as cheap insurance for other builds, but only `Agent` is exercised here.
 
-To re-check on a different build, set `DELEGATION_POLICY_DEBUG`. The model gate then appends the full hook payload to that file on each `Agent` call.
+To re-check on a different build, set `ORCHESTRATOR_DEBUG`. The model gate then appends the full hook payload to that file on each `Agent` call.
 
 ```bash
-export DELEGATION_POLICY_DEBUG=/tmp/agent-hook.jsonl
+export ORCHESTRATOR_DEBUG=/tmp/agent-hook.jsonl
 # restart Claude Code, spawn one subagent, then:
 jq -r '.tool_name' /tmp/agent-hook.jsonl
 ```
@@ -82,7 +82,7 @@ A prompt Stop hook in a different session on this machine failed with `Hook eval
 
 To settle it, restart with `claude --debug` and spawn one subagent. Debug output shows prompt-hook evaluation and any evaluator error directly.
 
-If it does error, remove the `SubagentStop` block from `hooks/hooks.json`. Nothing is lost that matters: `agents/verifying-worker.md` and `references/delegation-protocol.md` already carry the verification protocol, and a live subagent returned a fully evidence-cited report with explicit "Unverified" and "Could not check" sections. The hook was always the redundant belt, not the braces.
+If it does error, remove the `SubagentStop` block from `hooks/hooks.json`. Nothing is lost that matters: `agents/verifying-worker.md` and `references/orchestrator-protocol.md` already carry the verification protocol, and a live subagent returned a fully evidence-cited report with explicit "Unverified" and "Could not check" sections. The hook was always the redundant belt, not the braces.
 
 ## Known costs
 

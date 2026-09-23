@@ -5,14 +5,14 @@
 set -uo pipefail
 cat >/dev/null 2>&1 || true
 
-[ "${DELEGATION_POLICY_OFF:-0}" = "1" ] && exit 0
+[ "${ORCHESTRATOR_OFF:-0}" = "1" ] && exit 0
 
 root="${CLAUDE_PLUGIN_ROOT:-}"
-protocol="$root/references/delegation-protocol.md"
+protocol="$root/references/orchestrator-protocol.md"
 
 if [ -n "$root" ] && [ -f "$protocol" ]; then
   cat "$protocol"
 else
-  echo "delegation-policy is active. Delegate work to subagents, state a model on every Agent call, never use fable, and require verified evidence in every subagent report."
+  echo "orchestrator is active. Delegate work to subagents, state a model on every Agent call, never use fable, and require verified evidence in every subagent report."
 fi
 exit 0

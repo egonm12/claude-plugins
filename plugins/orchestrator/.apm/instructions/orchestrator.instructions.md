@@ -2,7 +2,7 @@
 applyTo: "**"
 ---
 
-# Delegation policy
+# Orchestrator
 
 Delegate work that means reading across several files, sweeping directories, or running broad searches. Keep the conclusion, not the raw output. You remain the quality gate on whatever comes back.
 

@@ -11,14 +11,14 @@ set -uo pipefail
 payload=$(cat 2>/dev/null || true)
 
 # Escape hatch. Set this to switch the whole plugin off for a session.
-if [ "${DELEGATION_POLICY_OFF:-0}" = "1" ]; then
+if [ "${ORCHESTRATOR_OFF:-0}" = "1" ]; then
   exit 0
 fi
 
-# Debug aid. Set DELEGATION_POLICY_DEBUG to a file path to capture the real
+# Debug aid. Set ORCHESTRATOR_DEBUG to a file path to capture the real
 # hook payload, then inspect it to see which fields Claude Code actually sends.
-if [ -n "${DELEGATION_POLICY_DEBUG:-}" ]; then
-  printf '%s\n' "$payload" >>"$DELEGATION_POLICY_DEBUG" 2>/dev/null || true
+if [ -n "${ORCHESTRATOR_DEBUG:-}" ]; then
+  printf '%s\n' "$payload" >>"$ORCHESTRATOR_DEBUG" 2>/dev/null || true
 fi
 
 # Homebrew and mise are often missing from the hook PATH.
@@ -51,7 +51,7 @@ lower_model=$(printf '%s' "$model" | tr '[:upper:]' '[:lower:]')
 case "$lower_model" in
   *fable*)
     cat >&2 <<MSG
-Blocked by delegation-policy: this Agent call sets model "$model".
+Blocked by orchestrator: this Agent call sets model "$model".
 
 Fable subagents are not allowed in this workspace. Re-issue the call with one of:
   model: "opus"    for judgement, design, review, and ambiguous work
@@ -74,7 +74,7 @@ elif [ -z "$model" ]; then
 fi
 
 if [ -n "$warning" ]; then
-  jq -n --arg msg "delegation-policy: $warning" '{systemMessage: $msg}'
+  jq -n --arg msg "orchestrator: $warning" '{systemMessage: $msg}'
 fi
 
 exit 0
