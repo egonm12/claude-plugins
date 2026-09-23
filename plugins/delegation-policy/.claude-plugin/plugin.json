@@ -1,8 +1,0 @@
-{
-  "name": "delegation-policy",
-  "version": "0.1.0",
-  "description": "Makes the main thread act as an orchestrator. Pushes work to subagents, blocks Fable subagents, and requires subagents to verify their claims before reporting back.",
-  "author": {
-    "name": "Egon Meijers"
-  }
-}

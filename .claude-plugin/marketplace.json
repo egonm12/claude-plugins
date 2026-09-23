@@ -15,10 +15,10 @@
       "version": "1.0.0"
     },
     {
-      "name": "delegation-policy",
-      "source": "./plugins/delegation-policy",
-      "description": "Keeps the main thread in an orchestrator role. Blocks Fable subagents, warns when a subagent model cannot be resolved, and holds subagents to verified reporting.",
-      "version": "0.1.0"
+      "name": "orchestrator",
+      "source": "./plugins/orchestrator",
+      "description": "Keeps the main thread in the orchestrator role. Blocks Fable workers, warns when a worker model is missing or unknown, and holds workers to verified reporting.",
+      "version": "0.2.0"
     }
   ]
 }

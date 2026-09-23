@@ -1,0 +1,10 @@
+name: orchestrator
+version: 0.2.0
+description: Keeps the main thread in the orchestrator role. Blocks Fable workers, warns when a worker model is missing or unknown, and holds workers to verified reporting.
+author: Egon Meijers
+license: MIT
+target: all
+type: hybrid
+
+compilation:
+  target: all
