@@ -119,9 +119,7 @@ If a session model field turns out to be present, the fork case can become a har
 | Fable deny | Confirmed live on 2026-09-13, on version 0.1.0. |
 | Warnings through `additionalContext` | Confirmed live on 2026-09-23, on version 0.2.0. A call without a model put the warning in Claude's context. |
 | SessionStart loader at startup and resume | Confirmed live on 2026-09-13, and again on 2026-09-23 on version 0.2.0. |
-| SessionStart reload after compaction | Not yet confirmed live. The Claude Code hook docs say SessionStart fires with source `compact`. |
-
-To confirm the open item, run `/compact` and check that "# Orchestrator protocol" is back in context.
+| SessionStart reload after compaction | Confirmed live on 2026-09-23, on version 0.3.0. After `/compact`, the protocol was back in Claude's context. |
 
 ## Known costs
 
