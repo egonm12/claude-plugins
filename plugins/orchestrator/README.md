@@ -36,6 +36,7 @@ The orchestration idea works on any agent. Only the enforcement is specific to C
 |---|---|---|---|
 | Model gate | `hooks/scripts/agent-model-gate.sh` | Yes | No |
 | Protocol loader | `hooks/scripts/load-protocol.sh` | Yes | No |
+| Per-turn reminder | `hooks/scripts/delegation-reminder.sh` | Yes | No |
 | Worker | `agents/verifying-worker.md` | Yes | No |
 | Instructions | `.apm/instructions/orchestrator.instructions.md` | Not needed | Yes, through `apm compile` into `AGENTS.md` |
 
@@ -47,6 +48,7 @@ The instructions are tool-neutral. They name no models and no Claude Code tools.
 |---|---|---|
 | Model gate | PreToolUse on `Agent` or `Task` | Denies any worker that asks for Fable. Warns Claude when the model is missing, unknown or a fork. |
 | Protocol loader | SessionStart | Loads `references/orchestrator-protocol.md` at session start. SessionStart fires again after compaction, so it reloads then too. |
+| Per-turn reminder | UserPromptSubmit | Adds one line before Claude starts on each prompt: delegate the research when it needs more than two exploratory commands or the question is open. It reads that line from the protocol. |
 | `verifying-worker` | Agent | Worker for any task. The orchestrator's prompt gives the task, and the worker brings the reporting rules, the report format and the scope rules. |
 
 The worker carries the protocol's four reporting rules word for word.
@@ -90,11 +92,25 @@ Version 0.1.0 had a SubagentStop prompt hook that blocked worker reports without
 
 The orchestrator is the quality gate. The protocol tells it to check every report, and the worker carries the reporting rules in its system prompt.
 
-## Why there is no per-turn reminder
+## Why the per-turn reminder came back
 
-Version 0.1.0 also had a UserPromptSubmit hook that repeated a short version of the protocol on every turn. It cost context on every turn, and its model descriptions had drifted from the protocol. SessionStart already loads the full protocol, and reloads it after compaction.
+Version 0.1.0 had a UserPromptSubmit hook that repeated a short version of the protocol on every turn. Version 0.2.0 removed it. It cost context on every turn, and its model descriptions had drifted from the protocol.
 
-If Claude stops delegating late in long sessions, bring back a one-line reminder that points to the protocol.
+Without it, Claude stopped delegating. On 2026-09-23, a `/release` session ran 17 tool calls in the main thread and delegated none of them. The question "Any risks before deploying?" alone took about eight calls. They pulled ADR text, memory files, Terraform diffs and live ECS state into the main thread. Three workers in parallel would have kept that out.
+
+Three things caused it:
+
+- The protocol loads once at session start. By the second prompt, many tool results sat between the protocol and the decision.
+- Claude judges each command on its own, and one more grep never looks like a broad search.
+- The skill's own steps were closer and more concrete than the protocol.
+
+Version 0.4.0 fixes both old problems and the new one:
+
+- The reminder is one line of about 35 words, not a copy of the protocol.
+- It reads that line from the protocol, so it cannot drift. The test checks that the protocol has exactly one such line.
+- The protocol now gives countable triggers: more than two exploratory commands, an open question, or large output. It also says that research inside a skill still counts as research.
+
+If Claude still runs long investigations in the main thread, the next step is a counter hook. It would warn after a number of main-thread tool calls without a delegation. That needs the hook to tell the main thread apart from a worker, and nobody has checked yet that the hook payload allows that.
 
 ## Check that the hooks fire
 
@@ -120,10 +136,12 @@ If a session model field turns out to be present, the fork case can become a har
 | Warnings through `additionalContext` | Confirmed live on 2026-09-23, on version 0.2.0. A call without a model put the warning in Claude's context. |
 | SessionStart loader at startup and resume | Confirmed live on 2026-09-13, and again on 2026-09-23 on version 0.2.0. |
 | SessionStart reload after compaction | Confirmed live on 2026-09-23, on version 0.3.0. After `/compact`, the protocol was back in Claude's context. |
+| Per-turn reminder | Not yet confirmed live on version 0.4.0. It also needs a check that it fires when the prompt is a skill command such as `/release`. |
 
 ## Known costs
 
-- The protocol adds about 520 words of context at session start and after each compaction.
+- The protocol adds about 650 words of context at session start and after each compaction.
+- The reminder adds about 35 words of context on every prompt.
 - A warning adds one short message to Claude's context for that Agent call.
 
 ## Testing
@@ -134,8 +152,9 @@ bash plugins/orchestrator/tests/gate.test.sh
 
 The test runs offline and needs `bash` and `jq`. It covers:
 - the model gate: Fable deny cases, allowed names and full IDs, warnings, bad input, the off switch, the debug capture and reduced mode without `jq`
+- the per-turn reminder: its text, its fallback, the off switch, and its entry in `hooks.json`
 - JSON validity of `hooks.json` and `plugin.json`
-- drift: the worker must carry the protocol's four rules word for word, and the protocol's model table must match the gate's default list
+- drift: the worker must carry the protocol's four rules word for word, the protocol's model table must match the gate's default list, and the protocol must have exactly one reminder line
 - tool neutrality: the instructions must not name a model
 
 The test does not check whether Claude Code fires the hooks. That needs a restart and `claude --debug`.

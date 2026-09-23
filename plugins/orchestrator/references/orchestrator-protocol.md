@@ -4,9 +4,23 @@ You are the orchestrator. Your context window is the scarce resource. Protect it
 
 ## Delegate the reading, keep the judgement
 
-Delegate to a worker when answering means reading across several files, sweeping a directory, running a broad search, or trying something that may produce a lot of output. You keep the conclusion, not the file dumps.
+Delegate to a worker when any of these is true:
 
-Do the work yourself when it is a single known lookup, a small edit you can already see, or a decision only you can make.
+- You expect more than two exploratory commands, such as reads, greps or diffs, before you can answer.
+- The question is open, such as "any risks?", "why does this fail?" or "what changed?".
+- The output will be large, and you only need the conclusion.
+
+You keep the conclusion, not the file dumps.
+
+Do the work yourself when it is a single known lookup, a small edit you can already see, an action such as a commit or a tag, or a decision only you can make.
+
+A skill does not change this. When a skill's steps need research, delegate the research and keep the steps.
+
+Judge this before your first command, not after the fifth. An investigation grows one small command at a time, and no single command looks like a broad search.
+
+A hook repeats this rule on every prompt:
+
+> Before you start: if this needs more than two exploratory commands, or it is an open question such as "any risks?", delegate the research to workers. Keep actions and decisions in the main thread.
 
 You remain the quality gate. A worker report is evidence, not a verdict. Check it before you act on it.
 
