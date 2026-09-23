@@ -28,7 +28,8 @@ def prompt_record(text: str = "why") -> records.PromptRecord:
 def agent_record(**changes: object) -> records.AgentCallRecord:
     fields = dict(session_id="s1", turn=3, tool="Agent", subagent_type="general-purpose",
                   description="d", prompt="p", model_given=None, user_named_subagent=False,
-                  verdict=TIER_VERDICT, model_set="opus", action="set", latency_ms=157, server="ok")
+                  verdict=TIER_VERDICT, model_set="opus", action="set", tier_margin=0.3, reason="upgrade",
+                  latency_ms=157, server="ok")
     fields.update(changes)
     return records.AgentCallRecord(**fields)  # type: ignore[arg-type]
 
@@ -62,11 +63,17 @@ class ShapeTest(unittest.TestCase):
         data = agent_record().to_json()
         self.assert_shape(data, ["kind", "ts", "session_id", "turn", "tool", "subagent_type",
                                  "description", "prompt", "model_given", "user_named_subagent",
-                                 "verdict", "model_set", "action", "latency_ms", "server"],
+                                 "verdict", "model_set", "action", "tier_margin", "reason",
+                                 "latency_ms", "server"],
                           {"user_named_subagent": bool, "verdict": dict, "latency_ms": int})
         self.assertEqual(data["kind"], "agent_call")
         self.assertIsNone(data["model_given"])
         self.assertEqual(data["verdict"], TIER_VERDICT)
+        self.assertEqual((data["tier_margin"], data["reason"]), (0.3, "upgrade"))
+
+    def test_agent_call_tier_margin_can_be_null(self) -> None:
+        data = agent_record(tier_margin=None, reason="fork").to_json()
+        self.assertEqual((data["tier_margin"], data["reason"]), (None, "fork"))
 
     def test_exploration_warning(self) -> None:
         data = records.ExplorationWarningRecord(session_id="s1", turn=3, n_exploratory=3,

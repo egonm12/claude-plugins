@@ -30,3 +30,4 @@ COUNTER_TEXT = ("orchestrator router: {count} exploratory commands this turn, th
 START_TEXT = "orchestrator router: starting the router daemon on {url}. First answers arrive after the model loads."
 SET_TEXT = 'the router set model "{tier}" for this worker.'
 REPLACED_TEXT = 'the router set model "{tier}" for this worker, replacing "{given}".'
+FLOOR_TEXT = "the task reads as judgement work, so the router did not use haiku."

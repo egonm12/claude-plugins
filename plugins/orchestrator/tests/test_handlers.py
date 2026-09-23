@@ -30,7 +30,11 @@ STUB_SKILL = json.dumps({
     "route": "skill", "route_conf": 1.0, "route_probs": {}, "tier": "none", "tier_conf": 0.0,
     "tier_probs": {}, "latency_ms": 0.0, "by_regex": True})
 STUB_TIER = json.dumps({"tier": "haiku", "tier_conf": 0.4,
-                        "tier_probs": {"opus": 0.1, "sonnet": 0.5, "haiku": 0.4}, "latency_ms": 90.1})
+                        "tier_probs": {"opus": 0.05, "sonnet": 0.15, "haiku": 0.8}, "latency_ms": 90.1})
+# A downgrade candidate whose top two tier probabilities are too close to apply it.
+STUB_TIER_CLOSE_HAIKU = json.dumps({"tier": "haiku", "tier_conf": 0.3764,
+                                    "tier_probs": {"opus": 0.3317, "sonnet": 0.292, "haiku": 0.3764},
+                                    "latency_ms": 90.1})
 
 REMINDER = ("orchestrator: Before you start: if this needs more than two exploratory commands, or it is an "
             "open question such as \"any risks?\", delegate the research to workers. Keep actions and "
@@ -343,6 +347,94 @@ class ModelPickTest(HandlerCase):
         self.assertIsNone(self.state("t9"))
 
 
+class ModelPickDowngradeGuardTest(HandlerCase):
+    """The downgrade guard, the judgement floor, and the reasons logged for each outcome."""
+
+    def last_call(self) -> Dict[str, Any]:
+        return self.log("agent_call")[-1]
+
+    def test_downgrade_is_blocked_on_a_close_margin(self) -> None:
+        # The real case: opus 0.3317, sonnet 0.292, haiku 0.3764. Claude gave opus, and it must stay.
+        task = {"description": "Spec review of notifier diff",
+                "prompt": "Read-only spec-conformance review. Do not change any files.", "model": "opus"}
+        self.assert_empty(self.agent(task, ORCHESTRATOR_ROUTER_STUB=STUB_TIER_CLOSE_HAIKU))
+        call = self.last_call()
+        self.assertEqual((call["action"], call["model_given"], call["model_set"], call["reason"]),
+                         ("kept", "opus", "opus", "downgrade_blocked"))
+        self.assertEqual(call["tier_margin"], 0.0447)
+
+    def test_downgrade_setting_widens_the_margin_needed(self) -> None:
+        self.assert_empty(self.agent(
+            {"description": "x", "model": "opus"}, ORCHESTRATOR_ROUTER_STUB=STUB_TIER_CLOSE_HAIKU,
+            ORCHESTRATOR_TIER_MARGIN="0.5"))
+        self.assertEqual(self.last_call()["reason"], "downgrade_blocked")
+
+    def test_downgrade_guard_disabled_by_zero(self) -> None:
+        data = self.output(self.agent({"description": "x", "model": "opus"},
+                                      ORCHESTRATOR_ROUTER_STUB=STUB_TIER_CLOSE_HAIKU, ORCHESTRATOR_TIER_MARGIN="0"))
+        self.assertEqual(data["hookSpecificOutput"]["updatedInput"]["model"], "haiku")
+        self.assertEqual(self.last_call()["reason"], "downgrade")
+
+    def test_upgrade_is_free_regardless_of_margin(self) -> None:
+        stub = json.dumps({"tier": "opus", "tier_conf": 0.34, "tier_probs": {"opus": 0.34, "sonnet": 0.33,
+                                                                             "haiku": 0.33}})
+        data = self.output(self.agent({"model": "haiku", "description": "x"}, ORCHESTRATOR_ROUTER_STUB=stub))
+        self.assertEqual(data["hookSpecificOutput"]["updatedInput"]["model"], "opus")
+        call = self.last_call()
+        self.assertEqual((call["action"], call["reason"]), ("set", "upgrade"))
+        self.assertEqual(call["tier_margin"], 0.01)
+
+    def test_no_change_reason_when_the_router_agrees(self) -> None:
+        data = self.output(self.agent({"model": "haiku", "description": "x"}, ORCHESTRATOR_ROUTER_STUB=STUB_TIER))
+        self.assertEqual(data["hookSpecificOutput"]["updatedInput"]["model"], "haiku")
+        self.assertEqual((self.last_call()["action"], self.last_call()["reason"]), ("set", "no_change"))
+
+    def test_no_model_given_reason(self) -> None:
+        data = self.output(self.agent({"description": "count files"}, ORCHESTRATOR_ROUTER_STUB=STUB_TIER))
+        self.assertEqual(data["hookSpecificOutput"]["updatedInput"]["model"], "haiku")
+        self.assertEqual(self.last_call()["reason"], "no_model_given")
+
+    def test_a_model_that_does_not_normalise_counts_as_no_model_given(self) -> None:
+        data = self.output(self.agent({"model": "sonet", "description": "x"}, ORCHESTRATOR_ROUTER_STUB=STUB_TIER))
+        self.assertEqual(data["hookSpecificOutput"]["updatedInput"]["model"], "haiku")
+        self.assertEqual(self.last_call()["reason"], "no_model_given")
+
+    def test_router_down_reason(self) -> None:
+        self.output(self.agent({"description": "x"}, ORCHESTRATOR_ROUTER_STUB="down"))
+        self.assertEqual(self.last_call()["reason"], "router_down")
+
+    def test_fork_reason(self) -> None:
+        self.agent({"subagent_type": "fork"}, ORCHESTRATOR_ROUTER_STUB=STUB_TIER)
+        self.assertEqual(self.last_call()["reason"], "fork")
+
+    def test_user_named_subagent_reason(self) -> None:
+        self.start_turn("s1", STUB_DELEGATE, prompt="use the verifying-worker for this")
+        self.agent({"subagent_type": "orchestrator:verifying-worker", "model": "sonnet", "description": "x"},
+                   ORCHESTRATOR_ROUTER_STUB=STUB_TIER)
+        self.assertEqual(self.last_call()["reason"], "user_named_subagent")
+
+    def test_judgement_floor_raises_haiku_and_tells_claude(self) -> None:
+        data = self.output(self.agent({"description": "security audit of the diff"},
+                                      ORCHESTRATOR_ROUTER_STUB=STUB_TIER))
+        self.assertEqual(data["hookSpecificOutput"]["updatedInput"]["model"], "sonnet")
+        self.assertIn("judgement work", data["systemMessage"])
+        self.assertEqual(data["hookSpecificOutput"]["additionalContext"], data["systemMessage"])
+        call = self.last_call()
+        self.assertEqual((call["action"], call["model_set"], call["reason"]), ("set", "sonnet", "judgement_floor"))
+
+    def test_judgement_floor_reads_the_subagent_type_and_the_prompt_too(self) -> None:
+        for changes in ({"subagent_type": "architecture-check"}, {"prompt": "do a security pass, " + "x" * 200}):
+            with self.subTest(changes):
+                data = self.output(self.agent(dict({"description": "x"}, **changes),
+                                              ORCHESTRATOR_ROUTER_STUB=STUB_TIER))
+                self.assertEqual(data["hookSpecificOutput"]["updatedInput"]["model"], "sonnet")
+
+    def test_judgement_floor_does_not_fire_past_two_hundred_characters(self) -> None:
+        prompt = "x" * 200 + " security review"
+        data = self.output(self.agent({"description": "x", "prompt": prompt}, ORCHESTRATOR_ROUTER_STUB=STUB_TIER))
+        self.assertEqual(data["hookSpecificOutput"]["updatedInput"]["model"], "haiku")
+
+
 class PromptTest(HandlerCase):
     def test_hint_on_delegate(self) -> None:
         payload = {"session_id": "s1", "prompt": "why does the build fail", "cwd": "/work"}
@@ -532,6 +624,52 @@ class CarryTest(HandlerCase):
         self.assertEqual([r["kind"] for r in self.log()], ["prompt", "prompt_outcome", "prompt"])
 
 
+class WorkerReportTest(HandlerCase):
+    def report(self, session: str, text: str, **env: str) -> HookResult:
+        payload = {"session_id": session, "prompt": text, "cwd": "/work"}
+        return self.run_event("prompt", payload, ORCHESTRATOR_ROUTER_STUB=STUB_DELEGATE, **env)
+
+    def test_worker_hand_back_produces_no_output_and_no_prompt_record(self) -> None:
+        self.assert_empty(self.report("s1", '<agent-message from="a2c95a8d059e8622e">report</agent-message>'))
+        self.assertIsNone(self.state("s1"))
+        self.assertEqual(self.log(), [])
+
+    def test_task_notification_produces_no_output(self) -> None:
+        self.assert_empty(self.report("s1", "<task-notification>\n<task-id>1</task-id>"))
+        self.assertIsNone(self.state("s1"))
+
+    def test_leading_whitespace_is_skipped_before_the_prefix_check(self) -> None:
+        self.assert_empty(self.report("s1", '  \n<agent-message from="x">'))
+
+    def test_state_and_counters_are_left_alone(self) -> None:
+        self.start_turn("s1", STUB_DELEGATE)
+        self.read("s1")
+        before = self.state("s1")
+        self.assert_empty(self.report("s1", '<agent-message from="x">report</agent-message>'))
+        self.assertEqual(self.state("s1"), before)
+        self.assertEqual(len(self.log("prompt")), 1)
+
+    def test_reopens_a_finalized_turn(self) -> None:
+        self.start_turn("s1", STUB_DELEGATE)
+        self.read("s1")
+        self.run_event("stop", {"session_id": "s1"})
+        self.assertTrue(self.state("s1")["finalized"])
+        self.assert_empty(self.report("s1", '<agent-message from="x">report</agent-message>'))
+        self.assertFalse(self.state("s1")["finalized"])
+        self.assertEqual(len(self.log("prompt_outcome")), 1, "reopening alone must not log an outcome")
+        self.read("s1")
+        self.run_event("stop", {"session_id": "s1"})
+        outcomes = self.log("prompt_outcome")
+        self.assertEqual([(o["turn"], o["n_tool"]) for o in outcomes], [(1, 1), (1, 2)])
+
+    def test_router_off_leaves_a_finalized_turn_finalized(self) -> None:
+        self.start_turn("s1", STUB_DELEGATE)
+        self.run_event("stop", {"session_id": "s1"})
+        self.assert_empty(self.report("s1", '<agent-message from="x">report</agent-message>',
+                                      ORCHESTRATOR_ROUTER_OFF="1"))
+        self.assertTrue(self.state("s1")["finalized"])
+
+
 class StopTest(HandlerCase):
     def test_outcome_on_stop_without_a_second_record(self) -> None:
         self.start_turn("f1", STUB_DELEGATE)
@@ -626,8 +764,8 @@ class LogKindsTest(HandlerCase):
         "prompt_outcome": ["kind", "ts", "session_id", "turn", "n_exploratory", "n_agent", "n_tool", "warned",
                            "source"],
         "agent_call": ["kind", "ts", "session_id", "turn", "tool", "subagent_type", "description", "prompt",
-                       "model_given", "user_named_subagent", "verdict", "model_set", "action", "latency_ms",
-                       "server"],
+                       "model_given", "user_named_subagent", "verdict", "model_set", "action", "tier_margin",
+                       "reason", "latency_ms", "server"],
         "exploration_warning": ["kind", "ts", "session_id", "turn", "n_exploratory", "threshold", "tool",
                                 "blocked"],
     }

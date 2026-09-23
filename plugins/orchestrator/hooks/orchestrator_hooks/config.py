@@ -21,6 +21,7 @@ MIN_TIMEOUT_MS = 100
 HEALTH_TIMEOUT_S = 1.0
 DEFAULT_ROUTE_MARGIN = 0.15
 DEFAULT_CARRY_WORDS = 3
+DEFAULT_TIER_MARGIN = 0.15
 
 
 def env_flag(env: Mapping[str, str], name: str) -> bool:
@@ -73,6 +74,7 @@ class Config:
     stub: Optional[str]
     route_margin: float
     carry_words: int
+    tier_margin: float
     data_dir: Path
     plugin_root: str
 
@@ -94,6 +96,7 @@ class Config:
             stub=env.get("ORCHESTRATOR_ROUTER_STUB"),
             route_margin=env_float(env, "ORCHESTRATOR_ROUTE_MARGIN", DEFAULT_ROUTE_MARGIN),
             carry_words=env_int(env, "ORCHESTRATOR_CARRY_WORDS", DEFAULT_CARRY_WORDS),
+            tier_margin=env_float(env, "ORCHESTRATOR_TIER_MARGIN", DEFAULT_TIER_MARGIN),
             data_dir=directory,
             plugin_root=env.get("CLAUDE_PLUGIN_ROOT", ""),
         )

@@ -48,7 +48,7 @@ The instructions are tool-neutral. They name no models and no Claude Code tools.
 | Model gate | PreToolUse on `Agent` or `Task` | Denies any worker that asks for Fable. Warns Claude when the model is missing, unknown or a fork. |
 | Protocol loader | SessionStart | Loads `references/orchestrator-protocol.md` at session start. SessionStart fires again after compaction, so it reloads then too. |
 | Per-turn reminder | UserPromptSubmit | Adds one line before Claude starts on each prompt: delegate the research when it needs more than two exploratory commands or the question is open. It reads that line from the protocol. |
-| Delegation hint | UserPromptSubmit | Asks the router whether the prompt needs an investigation. Adds one line only when it does. Needs the router, see below. |
+| Delegation hint | UserPromptSubmit | Asks the router whether the prompt needs an investigation. Adds one line only when it does. Needs the router, see below. Skips worker hand-backs and task notices, see below. |
 | Exploration counter | PreToolUse on Bash, Read, Grep, Glob, WebFetch, WebSearch | Counts exploratory commands in the main thread per turn. Warns once when the count passes a threshold that the router's verdict sets. |
 | Model pick | PreToolUse on `Agent` or `Task` | Picks the model for every worker call from the task text. Claude's own choice stands only when your prompt named that subagent. Needs the router. |
 | Router start | SessionStart | Starts the router daemon when it is installed and not running. |
@@ -95,7 +95,7 @@ The hooks use the verdict in three advisory ways. Nothing blocks by default.
 
 - **Delegation hint.** When the route verdict is `delegate`, the prompt gets one extra line. It names the verdict, its confidence and the likely tier, and asks Claude to delegate before running commands. Quick prompts get nothing. Close verdicts get nothing either, see below.
 - **Exploration counter.** The verdict sets a threshold for exploratory commands in the main thread: 2 after `delegate`, 5 after `self`, 3 otherwise. "Otherwise" covers `skill`, `unsure` and no verdict. When the count passes it, Claude gets one warning for that turn. A wrong verdict only shifts the threshold. Set `ORCHESTRATOR_EXPLORATION_BLOCK=1` to turn the warning into a deny.
-- **Model pick.** On every worker call, the router picks `opus`, `sonnet` or `haiku` from the task text. The hook sets that pick on the call, also when Claude chose another model. Claude's choice stands only when your prompt named that subagent, for example "use the verifying-worker for this". You see the picked model in a system message. Claude gets one line of context only when its own choice was replaced. When the router is down, the call goes through as Claude wrote it.
+- **Model pick.** On every worker call, the router picks `opus`, `sonnet` or `haiku` from the task text. An upgrade to a stronger tier is always set. A downgrade to a weaker tier is set only when the router is confident, see below. Claude's choice stands only when your prompt named that subagent, for example "use the verifying-worker for this". You see the picked model in a system message. Claude gets one line of context only when its own choice was replaced. When the router is down, the call goes through as Claude wrote it.
 
 Every verdict and every outcome goes to an append-only log, so a better classifier can be trained on real sessions later.
 
@@ -107,6 +107,29 @@ The hooks act on the effective route, not always on the router's raw verdict. Tw
 - **A short follow-up keeps the previous route.** A prompt of 3 words or fewer, such as "continue", "yes do it" or "go on", takes the effective route and tier of the turn before. So "continue" after an investigation gets the `delegate` threshold and the hint again. "yes, branch and open a PR" has 6 words and gets its own verdict. The first prompt of a session never carries. A slash command never carries either. A turn after a down router has no route to pass on. Set `ORCHESTRATOR_CARRY_WORDS` to change the word limit, or to `0` to switch this off.
 
 The router still judges every prompt. The log keeps its raw verdict next to the effective route, the gap between the two probabilities, and the turn a follow-up took its route from.
+
+### Worker hand-backs and task notices are not user prompts
+
+Claude Code delivers a subagent's report, and a background task notice, through the same UserPromptSubmit event as a real prompt. Their text starts with `<agent-message` or `<task-notification`, after any leading whitespace. The hooks skip these:
+
+- No router call, no new turn, no `prompt` log record, no hint and no reminder line. The hook prints nothing.
+- The current turn's state and its counters stay as they are.
+- If Stop already finalized the turn, the hook reopens it, so the next Stop writes a fresh `prompt_outcome` for the same turn with the updated counts. A reader of the log takes the last `prompt_outcome` per session and turn as the true one.
+- The exploration warning still fires at most once for the turn: reopening only clears the finalized flag, not the `warned` flag.
+
+Before this, a worker hand-back got its own router verdict and hint, started a new turn, and reset the exploration counters mid-task.
+
+### The downgrade guard and the judgement floor
+
+The model pick can now keep a stronger model than the router suggests, so a review never quietly drops to haiku.
+
+- **An upgrade is free.** When the router's tier is stronger than the model Claude gave, the hook always sets it.
+- **A downgrade needs confidence.** When the router's tier is weaker than the model Claude gave, the hook sets it only when the gap between the top two tier probabilities is at least `ORCHESTRATOR_TIER_MARGIN`, 0.15 by default. Otherwise Claude's model stands. One real call gave `opus`, and the router's tier probabilities were opus 0.33, sonnet 0.29, haiku 0.38, a gap of 0.04. Before this rule the call dropped to haiku. Now `opus` stays.
+- **A judgement task never lands on haiku.** When the description, the subagent type, or the first 200 characters of the worker prompt name review, audit, security, design or similar work, the floor raises a haiku result to sonnet, whether that haiku came from the router or from Claude's own choice.
+- Claude's model counts for this comparison only when it is exactly `opus`, `sonnet` or `haiku`, case-insensitive. Anything else, such as a full model ID or another vendor's name, is treated as no model given, and the router's tier is used.
+- A subagent your prompt named still keeps Claude's own choice outright, and a fork is still left alone. Both skip the guard and the floor entirely, as before.
+
+The log keeps the gap as `tier_margin`, and the outcome as `reason`: `user_named_subagent`, `fork`, `router_down`, `no_change`, `upgrade`, `downgrade`, `downgrade_blocked`, `judgement_floor` or `no_model_given`.
 
 ### Why the router advises and does not block
 
@@ -150,6 +173,7 @@ All optional, all environment variables.
 | `ORCHESTRATOR_THRESHOLD_DEFAULT` | `3` | Allowed after `skill`, an `unsure` verdict, no verdict, or a down router |
 | `ORCHESTRATOR_ROUTE_MARGIN` | `0.15` | A verdict whose `delegate` and `self` probabilities are closer than this counts as `unsure`. An invalid value uses the default |
 | `ORCHESTRATOR_CARRY_WORDS` | `3` | A prompt with this many words or fewer keeps the previous turn's route and tier. `0` switches this off |
+| `ORCHESTRATOR_TIER_MARGIN` | `0.15` | A downgrade from Claude's model applies only when the gap between the top two tier probabilities is at least this. `0` always allows the downgrade. An invalid value uses the default |
 | `ORCHESTRATOR_EXPLORATION_BLOCK` | `0` | `1` denies the call instead of warning |
 | `ORCHESTRATOR_LOG_OFF` | `0` | `1` stops writing the log |
 

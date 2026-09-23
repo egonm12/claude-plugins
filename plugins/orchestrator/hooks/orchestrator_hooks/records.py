@@ -81,6 +81,8 @@ class AgentCallRecord:
     verdict: Dict[str, Any]
     model_set: Any
     action: str
+    tier_margin: Optional[float]
+    reason: str
     latency_ms: int
     server: str
     ts: str = field(default_factory=now_iso)
@@ -92,6 +94,7 @@ class AgentCallRecord:
             "description": truncate(self.description), "prompt": truncate(self.prompt),
             "model_given": self.model_given, "user_named_subagent": self.user_named_subagent,
             "verdict": self.verdict, "model_set": self.model_set, "action": self.action,
+            "tier_margin": self.tier_margin, "reason": self.reason,
             "latency_ms": self.latency_ms, "server": self.server,
         }
 
