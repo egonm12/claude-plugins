@@ -21,7 +21,8 @@ TIER_VERDICT = {"tier": "opus", "tier_conf": 0.1, "tier_probs": {}}
 
 def prompt_record(text: str = "why") -> records.PromptRecord:
     return records.PromptRecord(session_id="s1", turn=3, cwd="/work", text=text,
-                                verdict=ROUTE_VERDICT, latency_ms=114, server="ok")
+                                verdict=ROUTE_VERDICT, latency_ms=114, server="ok",
+                                route_effective="unsure", margin=0.0558, carried_from_turn=None)
 
 
 def agent_record(**changes: object) -> records.AgentCallRecord:
@@ -42,10 +43,12 @@ class ShapeTest(unittest.TestCase):
     def test_prompt(self) -> None:
         data = prompt_record().to_json()
         self.assert_shape(data, ["kind", "ts", "session_id", "turn", "cwd", "text", "verdict",
-                                 "latency_ms", "server"],
+                                 "route_effective", "margin", "carried_from_turn", "latency_ms", "server"],
                           {"turn": int, "text": str, "verdict": dict, "latency_ms": int})
         self.assertEqual(data["kind"], "prompt")
         self.assertEqual(data["verdict"], ROUTE_VERDICT)
+        self.assertEqual((data["route_effective"], data["margin"], data["carried_from_turn"]),
+                         ("unsure", 0.0558, None))
 
     def test_prompt_outcome(self) -> None:
         data = records.PromptOutcomeRecord(session_id="s1", turn=3, n_exploratory=5, n_agent=0,

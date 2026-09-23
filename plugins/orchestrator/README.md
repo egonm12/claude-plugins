@@ -93,17 +93,26 @@ The router is an optional local classifier that gives the hooks a fast verdict o
 
 The hooks use the verdict in three advisory ways. Nothing blocks by default.
 
-- **Delegation hint.** When the route verdict is `delegate`, the prompt gets one extra line. It names the verdict, its confidence and the likely tier, and asks Claude to delegate before running commands. Quick prompts get nothing.
-- **Exploration counter.** The verdict sets a threshold for exploratory commands in the main thread: 2 after `delegate`, 5 after `self`, 3 otherwise. When the count passes it, Claude gets one warning for that turn. A wrong verdict only shifts the threshold. Set `ORCHESTRATOR_EXPLORATION_BLOCK=1` to turn the warning into a deny.
+- **Delegation hint.** When the route verdict is `delegate`, the prompt gets one extra line. It names the verdict, its confidence and the likely tier, and asks Claude to delegate before running commands. Quick prompts get nothing. Close verdicts get nothing either, see below.
+- **Exploration counter.** The verdict sets a threshold for exploratory commands in the main thread: 2 after `delegate`, 5 after `self`, 3 otherwise. "Otherwise" covers `skill`, `unsure` and no verdict. When the count passes it, Claude gets one warning for that turn. A wrong verdict only shifts the threshold. Set `ORCHESTRATOR_EXPLORATION_BLOCK=1` to turn the warning into a deny.
 - **Model pick.** On every worker call, the router picks `opus`, `sonnet` or `haiku` from the task text. The hook sets that pick on the call, also when Claude chose another model. Claude's choice stands only when your prompt named that subagent, for example "use the verifying-worker for this". You see the picked model in a system message. Claude gets one line of context only when its own choice was replaced. When the router is down, the call goes through as Claude wrote it.
 
 Every verdict and every outcome goes to an append-only log, so a better classifier can be trained on real sessions later.
+
+### Close verdicts and short follow-ups
+
+The hooks act on the effective route, not always on the router's raw verdict. Two rules decide it.
+
+- **A close verdict counts as unsure.** The router gives a probability for `delegate` and one for `self`. When the two are less than 0.15 apart, the hooks treat the verdict as `unsure`. An unsure turn gets the default threshold of 3 and no hint. One real prompt scored 0.47 for `delegate` and 0.53 for `self`. Before this rule it got the lenient `self` threshold of 5, although it was a clear investigation. Set `ORCHESTRATOR_ROUTE_MARGIN` to change the gap. A slash command is never unsure, because a regex decides it.
+- **A short follow-up keeps the previous route.** A prompt of 3 words or fewer, such as "continue", "yes do it" or "go on", takes the effective route and tier of the turn before. So "continue" after an investigation gets the `delegate` threshold and the hint again. "yes, branch and open a PR" has 6 words and gets its own verdict. The first prompt of a session never carries. A slash command never carries either. A turn after a down router has no route to pass on. Set `ORCHESTRATOR_CARRY_WORDS` to change the word limit, or to `0` to switch this off.
+
+The router still judges every prompt. The log keeps its raw verdict next to the effective route, the gap between the two probabilities, and the turn a follow-up took its route from.
 
 ### Why the router advises and does not block
 
 Measured on 75 prompts from real sessions, Claude alone delegated 6 of the 29 prompts that needed it. Zero-shot laya flagged 22 of the 29, and wrongly flagged 10 of the 36 quick prompts. On 49 worker calls, Claude named no model on 23. Those numbers make laya a better advisor than the fixed reminder, and not good enough to block on. Two blind labellers agreed on 88 percent of route labels, so there is room to improve with training. The full evaluation is on the branch `prototype/laya-router`.
 
-The confidence values are not calibrated, because the checkpoint ships invalid temperatures. No decision in the package depends on confidence. It is logged for later.
+The confidence values are not calibrated, because the checkpoint ships invalid temperatures. No decision in the package depends on confidence. It is logged for later. The unsure rule uses the gap between the two route probabilities instead. Those probabilities are not calibrated either, so the gap is a setting you can tune.
 
 ### Install the router
 
@@ -138,7 +147,9 @@ All optional, all environment variables.
 | `ORCHESTRATOR_ROUTER_TIMEOUT_MS` | `1500` | How long a hook waits for a verdict |
 | `ORCHESTRATOR_THRESHOLD_DELEGATE` | `2` | Exploratory commands allowed after a `delegate` verdict |
 | `ORCHESTRATOR_THRESHOLD_SELF` | `5` | Allowed after a `self` verdict |
-| `ORCHESTRATOR_THRESHOLD_DEFAULT` | `3` | Allowed after `skill`, no verdict, or a down router |
+| `ORCHESTRATOR_THRESHOLD_DEFAULT` | `3` | Allowed after `skill`, an `unsure` verdict, no verdict, or a down router |
+| `ORCHESTRATOR_ROUTE_MARGIN` | `0.15` | A verdict whose `delegate` and `self` probabilities are closer than this counts as `unsure`. An invalid value uses the default |
+| `ORCHESTRATOR_CARRY_WORDS` | `3` | A prompt with this many words or fewer keeps the previous turn's route and tier. `0` switches this off |
 | `ORCHESTRATOR_EXPLORATION_BLOCK` | `0` | `1` denies the call instead of warning |
 | `ORCHESTRATOR_LOG_OFF` | `0` | `1` stops writing the log |
 
@@ -150,7 +161,7 @@ The training log holds your prompt texts and the task texts of your worker calls
 
 ### When the router is down
 
-Every router step fails open when the daemon is not installed, not running, or slow. The hint then prints nothing. The counter uses the default threshold. The model pick leaves the call as it is. The log records `down`. No hook waits longer than the request timeout. The existing gate, loader and reminder do not depend on the router at all.
+Every router step fails open when the daemon is not installed, not running, or slow. The hint then prints nothing. The one exception is a short follow-up, which still keeps a `delegate` route from the turn before. The counter uses the default threshold. The model pick leaves the call as it is. The log records `down`. No hook waits longer than the request timeout. The existing gate, loader and reminder do not depend on the router at all.
 
 ## Why there is no report gate
 
@@ -222,7 +233,7 @@ If a session model field turns out to be present, the fork case can become a har
   - The checkpoint is an 842 MB one-time download.
   - Each prompt and each worker call adds about 100 ms for the classifier.
   - The first verdict after a daemon start can take about a second.
-  - The hint adds about 30 words only on prompts the router marks `delegate`.
+  - The hint adds about 30 words only on prompts the router marks `delegate`, and on short follow-ups to such a prompt.
 
 ## Testing
 
@@ -232,7 +243,7 @@ python3 -m unittest discover -s plugins/orchestrator/tests -v
 
 The tests run offline with the standard library only. They stub the router's answer through `ORCHESTRATOR_ROUTER_STUB` and point `CLAUDE_PLUGIN_DATA` at a temp dir, so they need no model and no network. Two seams:
 
-- Unit tests call the package in-process: the exploratory decision, thresholds, verdict parsing, the state record, the log records, the HTTP client, and every handler.
+- Unit tests call the package in-process: the exploratory decision, thresholds, verdict parsing, the unsure rule, the short-prompt check, the state record, the log records, the HTTP client, and every handler.
 - Seam tests run `hooks/hook.py` as Claude Code runs it. It runs as a subprocess with a JSON payload on stdin and environment variables set. Then stdout, stderr, exit code, the state file and the log are checked. They cover the gate's deny and warning cases, the reminder and the protocol, and the hint. They also cover the counter, the model pick, the daemon start with a fake interpreter, and the finaliser.
 - A package test checks:
   - That `hooks.json` and `plugin.json` parse.

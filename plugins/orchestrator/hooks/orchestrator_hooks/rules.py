@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, List, Mapping, Optional
 
 from .config import DEFAULT_PORT, env_int
 
 READING_TOOLS = frozenset({"Read", "Grep", "Glob", "WebFetch", "WebSearch"})
 ROUTES = ("delegate", "self", "skill")
+# Routes the hooks act on. "unsure" is a model verdict too close to call.
+EFFECTIVE_ROUTES = ROUTES + ("unsure",)
 TIERS = ("opus", "sonnet", "haiku")
 
 # One leading "cd <path> &&" or "cd <path>;" is skipped before the first word decides.
@@ -139,6 +141,27 @@ def parse_tier_verdict(obj: Any) -> TierVerdict:
         tier_conf=_number(answer.get("tier_conf")),
         tier_probs=_object(answer.get("tier_probs")),
     )
+
+
+def route_margin(route_probs: Mapping[str, Any]) -> Optional[float]:
+    """The gap between the delegate and self probabilities, or None when either is missing."""
+    delegate, self_ = route_probs.get("delegate"), route_probs.get("self")
+    if not all(isinstance(p, (int, float)) and not isinstance(p, bool) for p in (delegate, self_)):
+        return None
+    return round(abs(delegate - self_), 6)
+
+
+def effective_route(verdict: RouteVerdict, limit: float) -> str:
+    """The route the hooks act on: "unsure" when the model verdict is closer than the limit."""
+    margin = route_margin(verdict.route_probs)
+    if verdict.by_regex or margin is None or verdict.route not in ("delegate", "self"):
+        return verdict.route
+    return "unsure" if margin < limit else verdict.route
+
+
+def is_short(text: str, limit: int) -> bool:
+    """True when the text has at least one word and at most the limit. A limit of 0 is always False."""
+    return 0 < len((text or "").split()) <= limit
 
 
 def _names_word(text: str, word: str) -> bool:
