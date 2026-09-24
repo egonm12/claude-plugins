@@ -51,7 +51,7 @@ The instructions are tool-neutral. They name no models and no Claude Code tools.
 | Delegation hint | UserPromptSubmit | Asks the router whether the prompt needs an investigation. Adds one line only when it does. Needs the router, see below. Skips worker hand-backs and task notices, see below. |
 | Exploration counter | PreToolUse on Bash, Read, Grep, Glob, WebFetch, WebSearch | Counts exploratory commands in the main thread per turn. Warns once when the count passes a threshold that the router's verdict sets. |
 | Model pick | PreToolUse on `Agent` or `Task` | Picks the model for every worker call from the task text. Claude's own choice stands only when your prompt named that subagent. Needs the router. |
-| Router start | SessionStart | Starts the router daemon when it is installed and not running. |
+| Router start | SessionStart | Starts the router daemon when it is installed and not running. Restarts a daemon that runs an older plugin version. |
 | Turn finaliser | Stop | Writes the turn's outcome to the router log. |
 | `verifying-worker` | Agent | Worker for any task. The orchestrator's prompt gives the task, and the worker brings the reporting rules, the report format and the scope rules. |
 
@@ -131,6 +131,35 @@ The model pick can now keep a stronger model than the router suggests, so a revi
 
 The log keeps the gap as `tier_margin`, and the outcome as `reason`: `user_named_subagent`, `fork`, `router_down`, `no_change`, `upgrade`, `downgrade`, `downgrade_blocked`, `judgement_floor` or `no_model_given`.
 
+### The worker model question
+
+The router asks laya one question per worker call. Version 0.5.5 changes that question. The old question asked how much judgement a task needs. The new question asks whether the worker has to work out the approach itself, or whether the task gives it:
+
+- **opus:** open-ended work where the worker must find its own way. Examples: research outside the codebase or in an unfamiliar system, finding the root cause of a failure, designing or splitting a change, or building new tooling.
+- **sonnet:** work that follows a path the task lays out. Examples: drafting or reviewing against given criteria or a checklist, taking stock of the current state, comparing two things for parity, or a well-specified edit.
+- **haiku:** mechanical work with an obvious answer, such as grepping, listing files, renaming, counting or reformatting.
+
+The evidence comes from 40 worker calls that the author labelled by hand: 22 for sonnet and 18 for opus.
+
+- Claude's own model choice matched the label on 18 of the 40.
+- The old question matched on 18 of the 40.
+- An offline replay of the new question, with the downgrade guard above, matched on 30 of the 40. It picked a model that was too strong 5 times and too weak 5 times.
+
+Treat the 30 of 40 as optimistic. The new wording was written from the same 40 labels it was tested on. New labels will show the real rate.
+
+Each wording has an id, such as `b-2026-09-24` for this tier question and `a-2026-09-23` for the route question. The router returns the ids with every verdict, and the log keeps them, see below.
+
+### An outdated daemon restarts itself
+
+The daemon keeps running the code it started with. After a plugin update it would keep serving the old question. So the health check names the plugin version the daemon runs, and the session start hook compares it with its own version. When the daemon runs an older version, or names none, the hook restarts it. A daemon that runs a newer version is left alone, so a session that has not reloaded yet never stops the router of a newer version:
+
+- It reads the daemon's process id from the pid file in the data directory.
+- It stops that process only when the command line of that process contains `server.py`.
+- It waits up to 3 seconds for the port to free, then starts the new daemon without waiting for the model to load.
+- It prints one line to say it restarted the daemon.
+
+When the hook cannot confirm the process, it stops nothing. It prints one line that the router is outdated, and how to stop it by hand. It does the same when no new daemon can start, so the old one keeps serving. When the port stays busy after the stop, it prints one line, and the next session starts the new daemon.
+
 ### Why the router advises and does not block
 
 Measured on 75 prompts from real sessions, Claude alone delegated 6 of the 29 prompts that needed it. Zero-shot laya flagged 22 of the 29, and wrongly flagged 10 of the 36 quick prompts. On 49 worker calls, Claude named no model on 23. Those numbers make laya a better advisor than the fixed reminder, and not good enough to block on. Two blind labellers agreed on 88 percent of route labels, so there is room to improve with training. The full evaluation is on the branch `prototype/laya-router`.
@@ -154,7 +183,7 @@ curl -s http://127.0.0.1:8790/health
 curl -s -X POST http://127.0.0.1:8790/route -d '{"text":"why does the login test fail after the refactor?"}'
 ```
 
-The first command returns the status, the device and the checkpoint. The second returns the route and tier verdicts with probabilities and latency.
+The first command returns the status, the device, the checkpoint and the plugin version. The second returns the route and tier verdicts with probabilities, latency and the wording ids.
 
 ### Router settings
 
@@ -194,6 +223,8 @@ The log has five record kinds. Records of one turn share `session_id` and `turn`
 - `agent_result`: one per worker that stops.
 
 Every record has `plugin_version`. It names the plugin version that wrote the record. Use it to compare data from before and after a change.
+
+The verdict in a `prompt` record has `route_wording` and `tier_wording`. The verdict in an `agent_call` record has `tier_wording`. Each names the wording of the question that gave the verdict. Use it to split the data by wording. Records from before version 0.5.5 lack these fields. A router that is down or older gives `null`.
 
 A `prompt_outcome` record has these fields besides the counters:
 
@@ -295,6 +326,9 @@ If a session model field turns out to be present, the fork case can become a har
 | Downgrade guard and judgement floor | Not yet confirmed live. No worker call on version 0.5.3 or later has needed them. |
 | Turn outcome: edits, duration, context size | Confirmed live on 2026-09-24, on version 0.5.4. |
 | Worker results | Fires live on 2026-09-24, on version 0.5.4, but only for Claude Code's internal agents so far. A result for a real worker has not been seen yet. |
+| Worker model question `b-2026-09-24` | Not yet confirmed live. Only an offline replay on 40 labelled calls has tested it, see above. |
+| Wording ids in the log | Not yet confirmed live. |
+| Restart of an outdated daemon | Not yet confirmed live. The first session on version 0.5.5 should restart the daemon of version 0.5.4. |
 
 ## Known costs
 
@@ -327,6 +361,6 @@ The tests run offline with the standard library only. They stub the router's ans
   - That the protocol has exactly one reminder line.
   - That the tool-neutral instructions name no model.
 
-The router server itself has no automated test, because it needs the checkpoint. The health and route checks under "Install the router" are its smoke test.
+A router test imports the router service with laya replaced by an empty module. It checks the tier question word for word, the key mapping, the wording ids in the answers, and the plugin version in the health check. It cannot check the model's answers, because that needs the checkpoint. The health and route checks under "Install the router" are that smoke test.
 
 The tests do not check whether Claude Code fires the hooks. That needs a restart and `claude --debug`.

@@ -2,9 +2,13 @@
 """HTTP server for the orchestrator plugin's router.
 
 Loads the laya checkpoint once, then serves three endpoints on localhost:
-  GET  /health  -> {"status", "device", "checkpoint"}
+  GET  /health  -> {"status", "device", "checkpoint", "plugin_version"}
   POST /route   -> route and tier verdict for a prompt, body {"text": "..."}
   POST /tier    -> tier verdict only, for a worker task, body {"text": "..."}
+
+Every verdict carries the id of the question wording that produced it. The
+health check carries the plugin version this server runs, so the hooks can
+restart a server that an update left behind.
 
 Run:
   python server.py [--host 127.0.0.1] [--port 8790] \
@@ -29,9 +33,34 @@ WARM_UP_TEXT = (
     "whether the change to the session middleware or the new fixture causes it."
 )
 
+PLUGIN_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".claude-plugin", "plugin.json")
+
 MODEL = None
 CHECKPOINT = router_mod.DEFAULT_CHECKPOINT
 DEVICE_LABEL = "unknown"
+
+
+def read_plugin_version(path=PLUGIN_JSON):
+    """The version in plugin.json, or None when the file or the field is unreadable."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            version = json.load(handle).get("version")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return version if isinstance(version, str) else None
+
+
+# Read once at start, so the health check names the code this process runs.
+PLUGIN_VERSION = read_plugin_version()
+
+
+def _health_json():
+    return {
+        "status": "ok",
+        "device": DEVICE_LABEL,
+        "checkpoint": CHECKPOINT,
+        "plugin_version": PLUGIN_VERSION,
+    }
 
 
 def _route_json(decision):
@@ -44,6 +73,8 @@ def _route_json(decision):
         "tier_probs": decision.tier_probs,
         "latency_ms": decision.ms,
         "by_regex": decision.by_regex,
+        "route_wording": router_mod.ROUTE_WORDING,
+        "tier_wording": router_mod.TIER_WORDING,
     }
 
 
@@ -53,6 +84,7 @@ def _tier_json(decision):
         "tier_conf": decision.tier_conf,
         "tier_probs": decision.tier_probs,
         "latency_ms": decision.ms,
+        "tier_wording": router_mod.TIER_WORDING,
     }
 
 
@@ -85,9 +117,7 @@ class RouterHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            self._send_json(
-                200, {"status": "ok", "device": DEVICE_LABEL, "checkpoint": CHECKPOINT}
-            )
+            self._send_json(200, _health_json())
             return
         self._send_json(404, {"error": "not found"})
 

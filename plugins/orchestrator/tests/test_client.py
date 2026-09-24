@@ -116,6 +116,17 @@ class NetworkTest(unittest.TestCase):
             self.assertEqual(server.requests[0][:2], ("GET", "/health"))
         self.assertFalse(RouterClient("http://127.0.0.1:1", 1500, None).health())
 
+    def test_health_info(self) -> None:
+        body = {"status": "ok", "device": "mps", "checkpoint": "c", "plugin_version": "0.5.5"}
+        with CannedServer(200, json.dumps(body)) as server:
+            self.assertEqual(RouterClient(server.url, 1500, None).health_info(), body)
+        # A 200 without a JSON object still means up, with no version to read.
+        with CannedServer(200, "not json") as server:
+            self.assertEqual(RouterClient(server.url, 1500, None).health_info(), {})
+        with CannedServer(500, "{}") as server:
+            self.assertIsNone(RouterClient(server.url, 1500, None).health_info())
+        self.assertIsNone(RouterClient("http://127.0.0.1:1", 1500, None).health_info())
+
 
 if __name__ == "__main__":
     unittest.main()

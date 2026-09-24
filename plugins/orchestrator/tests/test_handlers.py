@@ -16,7 +16,7 @@ from unittest import mock
 PLUGIN = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN / "hooks"))
 
-from orchestrator_hooks import __version__, handlers  # noqa: E402
+from orchestrator_hooks import __version__, daemon, handlers  # noqa: E402
 from orchestrator_hooks.output import HookResult  # noqa: E402
 
 STUB_DELEGATE = json.dumps({
@@ -330,7 +330,7 @@ class ModelPickTest(HandlerCase):
         self.assertIn("sets no model", data["systemMessage"])
         call = self.last_call()
         self.assertEqual((call["action"], call["model_set"], call["server"], call["verdict"]),
-                         ("none", None, "down", {"tier": "none", "tier_conf": 0, "tier_probs": {}}))
+                         ("none", None, "down", {"tier": "none", "tier_conf": 0, "tier_probs": {}, "tier_wording": None}))
         self.output(self.agent({"description": "x"}, ORCHESTRATOR_ROUTER_STUB='{"tier":"none"}'))
         self.assertEqual((self.last_call()["action"], self.last_call()["server"]), ("none", "stub"))
 
@@ -462,7 +462,7 @@ class PromptTest(HandlerCase):
         self.assertEqual(self.state("c")["server"], "down")
         self.assertEqual(self.log("prompt")[2]["verdict"], {
             "route": "none", "route_conf": 0, "route_probs": {}, "tier": "none", "tier_conf": 0,
-            "tier_probs": {}, "by_regex": False})
+            "tier_probs": {}, "by_regex": False, "route_wording": None, "tier_wording": None})
 
     def test_turn_numbering_and_outcome_on_next_prompt(self) -> None:
         self.start_turn("s1", STUB_DELEGATE)
@@ -999,7 +999,32 @@ class AgentCallLinkTest(HandlerCase):
         self.assertEqual([r["tool_use_id"] for r in self.log("agent_call")], ["toolu_01Cc", None])
 
 
-class RouterStartTest(HandlerCase):
+class WordingLogTest(HandlerCase):
+    def test_prompt_record_keeps_the_wording_ids(self) -> None:
+        stub = dict(json.loads(STUB_DELEGATE), route_wording="a-2026-09-23", tier_wording="b-2026-09-24")
+        self.start_turn("s1", json.dumps(stub))
+        verdict = self.log("prompt")[0]["verdict"]
+        self.assertEqual((verdict["route_wording"], verdict["tier_wording"]), ("a-2026-09-23", "b-2026-09-24"))
+
+    def test_agent_call_record_keeps_the_wording_id(self) -> None:
+        self.start_turn("s1", STUB_DELEGATE)
+        stub = dict(json.loads(STUB_TIER), tier_wording="b-2026-09-24")
+        self.agent({"description": "x"}, ORCHESTRATOR_ROUTER_STUB=json.dumps(stub))
+        self.assertEqual(self.log("agent_call")[0]["verdict"]["tier_wording"], "b-2026-09-24")
+
+    def test_answer_without_wording_logs_null(self) -> None:
+        # A router from before 0.5.5 sends no wording id. The hooks still act and log null.
+        self.start_turn("s1", STUB_DELEGATE)
+        self.agent({"description": "x"}, ORCHESTRATOR_ROUTER_STUB=STUB_TIER)
+        self.assertEqual(self.log("prompt")[0]["verdict"]["route"], "delegate")
+        self.assertIsNone(self.log("prompt")[0]["verdict"]["tier_wording"])
+        call = self.log("agent_call")[0]
+        self.assertEqual((call["model_set"], call["verdict"]["tier_wording"]), ("haiku", None))
+
+
+class RouterStartCase(HandlerCase):
+    """A temporary plugin with a fake router Python that records its arguments."""
+
     def setUp(self) -> None:
         super().setUp()
         self.plugin = self.tmp / "plugin"
@@ -1028,6 +1053,8 @@ class RouterStartTest(HandlerCase):
             pass
         return self.args.read_text() if self.args.exists() else ""
 
+
+class RouterStartTest(RouterStartCase):
     def test_silent_paths(self) -> None:
         self.assertEqual(self.start().stdout, "# Protocol\n")
         (self.plugin / "router" / "server.py").write_text("")
@@ -1055,6 +1082,142 @@ class RouterStartTest(HandlerCase):
         result = self.start(ORCHESTRATOR_ROUTER_URL="http://127.0.0.1")
         self.assertIn("starting the router daemon on http://127.0.0.1.", result.stdout)
         self.assertTrue(self.wait_for_args().endswith("--port 8790\n"))
+
+
+class RouterRestartTest(RouterStartCase):
+    """An outdated daemon answers /health. No test here sends a real signal to any process."""
+
+    OLD_PID = 424242
+    ROUTER_COMMAND = "/data/router-venv/bin/python /plugin/router/server.py --port 8790"
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.plugin / "router" / "server.py").write_text("")
+        self.data.mkdir()
+        (self.data / "router-server.pid").write_text("%d\n" % self.OLD_PID)
+        self.terminate = self.patch("_terminate", return_value=True)
+        self.alive = self.patch("_alive", return_value=True)
+        self.command = self.patch("_command_line", return_value=self.ROUTER_COMMAND)
+        # The first health check sees the old daemon. Each later one, in the wait loop, sees the port free.
+        self.health_info = self.patch("RouterClient.health_info", target="orchestrator_hooks.daemon",
+                                      return_value={"status": "ok", "plugin_version": "0.0.1"})
+        self.health = self.patch("RouterClient.health", target="orchestrator_hooks.daemon", return_value=False)
+
+    def patch(self, name: str, target: str = "orchestrator_hooks.daemon", **kwargs: Any) -> mock.MagicMock:
+        patcher = mock.patch(target + "." + name, **kwargs)
+        self.addCleanup(patcher.stop)
+        return patcher.start()
+
+    def restart_line(self, old: str) -> str:
+        return ("orchestrator router: restarting the router daemon on http://127.0.0.1:1, because it runs "
+                "version %s and the plugin is version %s. First answers arrive after the model loads." % (old, __version__))
+
+    def outdated_line(self, old: str = "0.0.1") -> str:
+        return ("orchestrator router: the router daemon on http://127.0.0.1:1 runs version %s, but the plugin is "
+                "version %s. Stop the process on port 1 (lsof -ti tcp:1 shows it), then start a new session."
+                % (old, __version__))
+
+    def assert_not_stopped(self) -> None:
+        self.terminate.assert_not_called()
+        self.assertFalse(self.args.exists())
+        self.assertEqual((self.data / "router-server.pid").read_text(), "%d\n" % self.OLD_PID)
+
+    def test_version_mismatch_restarts(self) -> None:
+        result = self.start()
+        self.assertEqual(result.stdout, "# Protocol\n" + self.restart_line("0.0.1") + "\n")
+        self.command.assert_called_once_with(self.OLD_PID)
+        self.terminate.assert_called_once_with(self.OLD_PID)
+        self.assertNotEqual((self.data / "router-server.pid").read_text().strip(), str(self.OLD_PID))
+        self.assertEqual(self.wait_for_args(), "%s --port 1\n" % (self.plugin / "router" / "server.py"))
+
+    def test_daemon_without_version_restarts(self) -> None:
+        for body in ({"status": "ok", "device": "mps"}, {}, {"plugin_version": 5}):
+            with self.subTest(body=body):
+                self.health_info.return_value = body
+                if self.args.exists():
+                    self.args.unlink()
+                result = self.start()
+                self.assertIn(self.restart_line("unknown"), result.stdout)
+                self.wait_for_args()
+                (self.data / "router-server.pid").write_text("%d\n" % self.OLD_PID)
+
+    def test_matching_version_does_nothing(self) -> None:
+        self.health_info.return_value = {"status": "ok", "plugin_version": __version__}
+        self.assertEqual(self.start().stdout, "# Protocol\n")
+        self.command.assert_not_called()
+        self.assert_not_stopped()
+
+    def test_newer_version_does_nothing(self) -> None:
+        # An older session must not stop the router that a newer plugin version started.
+        for newer in ("99.0.0", "0.5.10", __version__ + ".1"):
+            with self.subTest(newer=newer):
+                self.health_info.return_value = {"status": "ok", "plugin_version": newer}
+                self.assertEqual(self.start().stdout, "# Protocol\n")
+                self.command.assert_not_called()
+                self.assert_not_stopped()
+
+    def test_older_version_compares_by_number(self) -> None:
+        self.assertTrue(daemon.is_older("0.5.9", "0.5.10"))
+        self.assertFalse(daemon.is_older("0.5.10", "0.5.9"))
+        self.assertFalse(daemon.is_older("0.5.5", "0.5.5"))
+        self.assertTrue(daemon.is_older(None, "0.5.5"))
+        self.assertTrue(daemon.is_older("junk", "0.5.5"))
+
+    def test_unconfirmed_pid_is_not_stopped(self) -> None:
+        cases = {
+            "other program": lambda: setattr(self.command, "return_value", "/usr/bin/vim notes.md"),
+            "ps gives nothing": lambda: setattr(self.command, "return_value", ""),
+            "dead pid": lambda: setattr(self.alive, "return_value", False),
+            "no pid file": lambda: (self.data / "router-server.pid").unlink(),
+            "junk pid file": lambda: (self.data / "router-server.pid").write_text("abc\n"),
+        }
+        for label, arrange in cases.items():
+            with self.subTest(label):
+                self.command.return_value, self.alive.return_value = self.ROUTER_COMMAND, True
+                (self.data / "router-server.pid").write_text("%d\n" % self.OLD_PID)
+                arrange()
+                result = self.start()
+                self.assertEqual(result.stdout, "# Protocol\n" + self.outdated_line() + "\n")
+                self.terminate.assert_not_called()
+                self.assertFalse(self.args.exists())
+
+    def test_no_new_daemon_to_start_keeps_the_old_one(self) -> None:
+        (self.plugin / "router" / "server.py").unlink()
+        self.assertEqual(self.start().stdout, "# Protocol\n" + self.outdated_line() + "\n")
+        self.assert_not_stopped()
+
+    def test_failed_signal_does_not_start(self) -> None:
+        self.terminate.return_value = False
+        self.assertEqual(self.start().stdout, "# Protocol\n" + self.outdated_line() + "\n")
+        self.assertFalse(self.args.exists())
+
+    def test_port_still_busy_does_not_start(self) -> None:
+        self.health.return_value = True
+        with mock.patch("orchestrator_hooks.daemon.STOP_WAIT_S", 0.2):
+            result = self.start()
+        self.assertEqual(result.stdout, "# Protocol\norchestrator router: stopped the outdated router daemon on "
+                                        "http://127.0.0.1:1, but its port is still busy. The next session starts "
+                                        "the new one.\n")
+        self.terminate.assert_called_once_with(self.OLD_PID)
+        self.assertFalse(self.args.exists())
+
+    def test_stub_skips_the_version_check(self) -> None:
+        self.assertEqual(self.start(ORCHESTRATOR_ROUTER_STUB=STUB_SELF).stdout, "# Protocol\n")
+        self.health_info.assert_not_called()
+        self.assert_not_stopped()
+
+
+class CommandLineTest(unittest.TestCase):
+    """The ps check on processes that are safe to look at. Nothing is stopped."""
+
+    def test_own_process(self) -> None:
+        from orchestrator_hooks import daemon
+        self.assertIn("python", daemon._command_line(os.getpid()).lower())
+
+    def test_missing_process(self) -> None:
+        from orchestrator_hooks import daemon
+        self.assertEqual(daemon._command_line(999999), "")
+        self.assertFalse(daemon._alive(999999))
 
 
 if __name__ == "__main__":
