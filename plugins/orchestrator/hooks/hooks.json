@@ -46,12 +46,35 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${ORCHESTRATOR_PYTHON:-python3}\" \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.py\" edit-call",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
           {
             "type": "command",
             "command": "\"${ORCHESTRATOR_PYTHON:-python3}\" \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.py\" stop",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${ORCHESTRATOR_PYTHON:-python3}\" \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.py\" subagent-stop",
             "timeout": 5
           }
         ]

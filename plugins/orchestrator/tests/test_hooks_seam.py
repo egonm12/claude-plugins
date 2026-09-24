@@ -498,7 +498,7 @@ class PromptHintTest(SeamCase):
         with self.subTest("hint state: prompt"):
             self.assertEqual(st["prompt"], "why does the build fail")
         with self.subTest("hint state: counters are numbers at 0"):
-            for key in ("n_exploratory", "n_agent", "n_tool"):
+            for key in ("n_exploratory", "n_agent", "n_tool", "n_edit"):
                 self.assertIsInstance(st[key], int)
                 self.assertNotIsInstance(st[key], bool)
                 self.assertEqual(st[key], 0)
@@ -1462,6 +1462,91 @@ class StopTest(SeamCase):
         for label, payload in (("finalize empty payload", ""), ("malformed payload", "{not json")):
             with self.subTest(label):
                 self.assertSilent(self.hook("stop", payload))
+
+
+# ---------------------------------------------------------------- edit-call, outcome measures, subagent-stop
+
+
+def assistant_line(ts: str, tokens: tuple, model: str = "claude-opus-5-5", sidechain: bool = False) -> str:
+    usage = {"input_tokens": tokens[0], "cache_read_input_tokens": tokens[1], "cache_creation_input_tokens": tokens[2]}
+    return json.dumps({"type": "assistant", "isSidechain": sidechain, "timestamp": ts,
+                       "message": {"model": model, "usage": usage, "content": [{"type": "text", "text": "ok"}]}}) + "\n"
+
+
+class EditCallTest(SeamCase):
+    def edit(self, session: str, tool: str = "Edit", **env: str) -> Result:
+        return self.hook("edit-call", tool_payload(session, tool, {"file_path": "/x"}), **env)
+
+    def test_edits_are_counted_silently_and_never_warn(self) -> None:
+        self.start_turn("e1", STUB_DELEGATE)
+        for tool in ("Edit", "Write", "MultiEdit", "NotebookEdit", "Edit"):
+            self.assertSilent(self.edit("e1", tool))
+        st = self.state("e1")
+        self.assertEqual((st["n_edit"], st["n_tool"], st["n_exploratory"], st["warned"]), (5, 0, 0, False))
+        self.assertEqual(self.log("exploration_warning"), [])
+        self.assertSilent(self.hook("stop", {"session_id": "e1"}))
+        self.assertEqual(self.log("prompt_outcome")[0]["n_edit"], 5)
+
+    def test_worker_edits_and_bad_payloads_are_ignored(self) -> None:
+        self.start_turn("e1", STUB_DELEGATE)
+        self.assertSilent(self.hook("edit-call", tool_payload("e1", "Edit", {}, agent_id="agent-7")))
+        for raw in ("", "{not json", "[1]"):
+            self.assertSilent(self.hook("edit-call", raw))
+        self.assertEqual(self.state("e1")["n_edit"], 0)
+
+
+class OutcomeMeasuresTest(SeamCase):
+    def test_outcome_has_duration_and_context_tokens(self) -> None:
+        transcript = self.tmp / "session.jsonl"
+        transcript.write_text(assistant_line("2026-09-24T08:00:00Z", (2, 1000, 200)))
+        payload = dict(prompt_payload("t1", "look into this for me"), transcript_path=str(transcript))
+        self.assertOk(self.hook("prompt", payload, ORCHESTRATOR_ROUTER_STUB=STUB_DELEGATE))
+        self.assertEqual(self.state("t1")["context_tokens_start"], 1202)
+        with transcript.open("a") as handle:
+            handle.write(assistant_line("2026-09-24T08:00:05Z", (3, 5000, 400)))
+        self.assertSilent(self.hook("stop", {"session_id": "t1", "transcript_path": str(transcript)}))
+        outcome = self.log("prompt_outcome")[0]
+        self.assertEqual((outcome["context_tokens_start"], outcome["context_tokens_end"]), (1202, 5403))
+        self.assertIsInstance(outcome["duration_s"], int)
+        self.assertGreaterEqual(outcome["duration_s"], 0)
+        self.assertIsInstance(outcome["plugin_version"], str)
+
+    def test_missing_transcript_gives_null(self) -> None:
+        self.start_turn("t1", STUB_DELEGATE)
+        self.assertSilent(self.hook("stop", {"session_id": "t1", "transcript_path": str(self.tmp / "gone.jsonl")}))
+        outcome = self.log("prompt_outcome")[0]
+        self.assertEqual((outcome["context_tokens_start"], outcome["context_tokens_end"]), (None, None))
+
+
+class SubagentStopSeamTest(SeamCase):
+    def test_writes_agent_result_and_prints_nothing(self) -> None:
+        self.start_turn("s1", STUB_DELEGATE)
+        agents = self.tmp / "s1" / "subagents"
+        agents.mkdir(parents=True)
+        path = agents / "agent-a1.jsonl"
+        path.write_text(json.dumps({"type": "user", "isSidechain": True, "timestamp": "2026-09-23T20:01:32Z"}) + "\n"
+                        + assistant_line("2026-09-23T20:03:32Z", (2, 45745, 2484), "claude-sonnet-5", True))
+        (agents / "agent-a1.meta.json").write_text(json.dumps({"toolUseId": "toolu_01Cc"}))
+        payload = {"session_id": "s1", "hook_event_name": "SubagentStop", "agent_id": "a1",
+                   "agent_type": "Explore", "agent_transcript_path": str(path),
+                   "last_assistant_message": "done", "stop_hook_active": False}
+        self.assertSilent(self.hook("subagent-stop", payload))
+        record = self.log("agent_result")[0]
+        self.assertEqual((record["turn"], record["agent_id"], record["agent_type"], record["model"],
+                          record["duration_s"], record["context_tokens_end"], record["report_chars"],
+                          record["tool_use_id"]),
+                         (1, "a1", "Explore", "claude-sonnet-5", 120.0, 48231, 4, "toolu_01Cc"))
+
+    def test_bad_payloads_are_silent(self) -> None:
+        for raw in ("", "{not json", "[1]", json.dumps({"agent_transcript_path": 5})):
+            with self.subTest(raw):
+                self.assertSilent(self.hook("subagent-stop", raw))
+
+    def test_agent_call_logs_the_tool_use_id(self) -> None:
+        self.start_turn("s1", STUB_DELEGATE)
+        payload = dict(tool_payload("s1", "Agent", {"description": "x", "model": "opus"}), tool_use_id="toolu_9")
+        self.assertOk(self.hook("agent-call", payload, ORCHESTRATOR_ROUTER_STUB=STUB_TIER_OPUS))
+        self.assertEqual(self.log("agent_call")[0]["tool_use_id"], "toolu_9")
 
 
 # ---------------------------------------------------------------- unknown event

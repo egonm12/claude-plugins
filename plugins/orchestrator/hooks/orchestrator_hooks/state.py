@@ -32,6 +32,9 @@ class TurnState:
     warned: bool = False
     finalized: bool = False
     server: str = "down"
+    n_edit: int = 0
+    # The main thread's context size when the prompt arrived, or None when the transcript gave none.
+    context_tokens_start: Optional[int] = None
 
 
 def state_path(state_dir: Path, session: str) -> Path:
@@ -47,10 +50,14 @@ def load_for(state_dir: Path, payload: Dict[str, Any]) -> Tuple[Path, Optional[T
 
 # Fields that hold any number. Other number fields hold whole numbers.
 _REAL_FIELDS = frozenset({"route_conf"})
+# Fields that hold a whole number or None.
+_OPTIONAL_WHOLE_FIELDS = frozenset({"context_tokens_start"})
 
 
 def _coerce(name: str, default: Any, found: Any) -> Any:
     """The stored value when it has the field's type, else the default."""
+    if name in _OPTIONAL_WHOLE_FIELDS:
+        return int(found // 1) if isinstance(found, (int, float)) and not isinstance(found, bool) else None
     if isinstance(default, bool):
         return found if isinstance(found, bool) else default
     if isinstance(default, (int, float)):

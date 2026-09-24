@@ -1,7 +1,8 @@
-"""The four record kinds of the training log, and the append to it.
+"""The five record kinds of the training log, and the append to it.
 
 The log is append-only JSON lines in the data directory. Records join on
-session id and turn. A failed write is ignored, so logging never breaks a hook.
+session id and turn. Every record carries the plugin version that wrote it.
+A failed write is ignored, so logging never breaks a hook.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
+from . import __version__
 from .config import TEXT_LIMIT
 
 
@@ -46,6 +48,7 @@ class PromptRecord:
             "cwd": self.cwd, "text": truncate(self.text), "verdict": self.verdict,
             "route_effective": self.route_effective, "margin": self.margin,
             "carried_from_turn": self.carried_from_turn, "latency_ms": self.latency_ms, "server": self.server,
+            "plugin_version": __version__,
         }
 
 
@@ -58,13 +61,20 @@ class PromptOutcomeRecord:
     n_tool: int
     warned: bool
     source: str
+    n_edit: int = 0
+    # Whole seconds from the turn start, and the main thread's context size at the start and the end.
+    duration_s: Optional[int] = None
+    context_tokens_start: Optional[int] = None
+    context_tokens_end: Optional[int] = None
     ts: str = field(default_factory=now_iso)
 
     def to_json(self) -> Dict[str, Any]:
         return {
             "kind": "prompt_outcome", "ts": self.ts, "session_id": self.session_id,
             "turn": self.turn, "n_exploratory": self.n_exploratory, "n_agent": self.n_agent,
-            "n_tool": self.n_tool, "warned": self.warned, "source": self.source,
+            "n_tool": self.n_tool, "n_edit": self.n_edit, "warned": self.warned, "source": self.source,
+            "duration_s": self.duration_s, "context_tokens_start": self.context_tokens_start,
+            "context_tokens_end": self.context_tokens_end, "plugin_version": __version__,
         }
 
 
@@ -85,6 +95,8 @@ class AgentCallRecord:
     reason: str
     latency_ms: int
     server: str
+    # The Agent tool_use id, which the worker's agent_result carries too.
+    tool_use_id: Optional[str] = None
     ts: str = field(default_factory=now_iso)
 
     def to_json(self) -> Dict[str, Any]:
@@ -95,7 +107,8 @@ class AgentCallRecord:
             "model_given": self.model_given, "user_named_subagent": self.user_named_subagent,
             "verdict": self.verdict, "model_set": self.model_set, "action": self.action,
             "tier_margin": self.tier_margin, "reason": self.reason,
-            "latency_ms": self.latency_ms, "server": self.server,
+            "latency_ms": self.latency_ms, "server": self.server, "tool_use_id": self.tool_use_id,
+            "plugin_version": __version__,
         }
 
 
@@ -113,11 +126,34 @@ class ExplorationWarningRecord:
         return {
             "kind": "exploration_warning", "ts": self.ts, "session_id": self.session_id,
             "turn": self.turn, "n_exploratory": self.n_exploratory, "threshold": self.threshold,
-            "tool": self.tool, "blocked": self.blocked,
+            "tool": self.tool, "blocked": self.blocked, "plugin_version": __version__,
         }
 
 
-Record = Union[PromptRecord, PromptOutcomeRecord, AgentCallRecord, ExplorationWarningRecord]
+@dataclass
+class AgentResultRecord:
+    session_id: str
+    turn: int
+    agent_id: str
+    agent_type: str
+    tool_use_id: Optional[str]
+    # The model the worker ran on, read from its own transcript.
+    model: Optional[str]
+    duration_s: Optional[float]
+    context_tokens_end: Optional[int]
+    report_chars: Optional[int]
+    ts: str = field(default_factory=now_iso)
+
+    def to_json(self) -> Dict[str, Any]:
+        return {
+            "kind": "agent_result", "ts": self.ts, "session_id": self.session_id, "turn": self.turn,
+            "agent_id": self.agent_id, "agent_type": self.agent_type, "tool_use_id": self.tool_use_id,
+            "model": self.model, "duration_s": self.duration_s, "context_tokens_end": self.context_tokens_end,
+            "report_chars": self.report_chars, "plugin_version": __version__,
+        }
+
+
+Record = Union[PromptRecord, PromptOutcomeRecord, AgentCallRecord, ExplorationWarningRecord, AgentResultRecord]
 
 
 def append(path: Path, record: Record, log_off: bool = False) -> None:

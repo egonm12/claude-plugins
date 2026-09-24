@@ -183,9 +183,52 @@ The router keeps everything in the plugin data directory that Claude Code provid
 
 The training log holds your prompt texts and the task texts of your worker calls, truncated to 4000 characters. It also holds the router's verdicts and what happened in the turn. Set `ORCHESTRATOR_LOG_OFF=1` if you do not want that recorded. Delete the file to start over.
 
+### What the training log records
+
+The log has five record kinds. Records of one turn share `session_id` and `turn`.
+
+- `prompt`: one per user prompt, with the router's verdict.
+- `prompt_outcome`: one per turn, written when the turn ends.
+- `agent_call`: one per worker call from the main thread, with the model pick.
+- `exploration_warning`: one when the exploration counter warns.
+- `agent_result`: one per worker that stops.
+
+Every record has `plugin_version`. It names the plugin version that wrote the record. Use it to compare data from before and after a change.
+
+A `prompt_outcome` record has these fields besides the counters:
+
+- `n_edit`: how many times the main thread ran `Edit`, `Write`, `MultiEdit` or `NotebookEdit` in the turn. Edits never count as exploration and never trigger the warning.
+- `duration_s`: whole seconds from the prompt to the moment the hooks wrote the outcome.
+- `context_tokens_start`: the main thread's context size when the prompt arrived.
+- `context_tokens_end`: the main thread's context size when the turn ended.
+
+The hooks read the context size from the session transcript. It is the input tokens of the last assistant message, including cached tokens. The hooks read only the last 512 KB of the transcript. The value is `null` when the transcript is missing or holds no usage. A worker report that reopens a turn keeps the turn's start time and start size.
+
+An `agent_result` record has these fields:
+
+- `agent_id` and `agent_type`: the worker as Claude Code names it. Claude Code also runs internal agents, for example for prompt suggestions. For those, `agent_type` is an empty string, unless the session itself runs as a named agent. Filter on `agent_type` to leave them out.
+- `tool_use_id`: the id of the `Agent` call that started the worker. The matching `agent_call` record has the same id. Join on this field. Do not join on the turn, because a background worker can finish in a later turn.
+- `model`: the model the worker really ran on, from its own transcript, for example `claude-sonnet-5`. Compare it with `model_set` in the `agent_call` record to check that the router's model choice took effect.
+- `duration_s`: seconds from the first to the last line of the worker's transcript, to one decimal.
+- `context_tokens_end`: the worker's context size at its last message.
+- `report_chars`: the length of the worker's report in characters. For a worker that hands back through `SubagentHandback`, this is the length of the handed-back message.
+
+Any field the hooks cannot read is `null`. `tool_use_id` is also `null` in `agent_call` when Claude Code sends none.
+
 ### When the router is down
 
 Every router step fails open when the daemon is not installed, not running, or slow. The hint then prints nothing. The one exception is a short follow-up, which still keeps a `delegate` route from the turn before. The counter uses the default threshold. The model pick leaves the call as it is. The log records `down`. No hook waits longer than the request timeout. The existing gate, loader and reminder do not depend on the router at all.
+
+## Label the router log
+
+The router log shows what the router chose. It does not show what was right. The labelling tool lets you add that by hand.
+
+- `python3 tools/label.py` asks per turn: should this have been delegated? Press d (delegate), s (self), k (skip), u (undo) or q (quit).
+- `python3 tools/label.py --workers` asks per worker call: what is the smallest model that would do this well? Press o (opus), s (sonnet) or h (haiku).
+- The tool shows unsure turns first. Then it shows turns where the route and the work did not match.
+- It saves each answer at once to `labels.jsonl` in the data dir. Undo adds a line, so no answer is lost.
+- `--since`, `--session` and `--limit` narrow the items. `--stats` shows how often the router agreed with you. `--export FILE` writes the labelled examples for training.
+- The tool reads local files only and sends nothing over the network.
 
 ## Why there is no report gate
 
@@ -270,8 +313,8 @@ The tests run offline with the standard library only. They stub the router's ans
 - Unit tests call the package in-process: the exploratory decision, thresholds, verdict parsing, the unsure rule, the short-prompt check, the state record, the log records, the HTTP client, and every handler.
 - Seam tests run `hooks/hook.py` as Claude Code runs it. It runs as a subprocess with a JSON payload on stdin and environment variables set. Then stdout, stderr, exit code, the state file and the log are checked. They cover the gate's deny and warning cases, the reminder and the protocol, and the hint. They also cover the counter, the model pick, the daemon start with a fake interpreter, and the finaliser.
 - A package test checks:
-  - That `hooks.json` and `plugin.json` parse.
-  - That the five events are registered.
+  - That `hooks.json` and `plugin.json` parse, and that the package version matches the manifests.
+  - That the seven hook registrations are in place.
   - That the worker carries the protocol's four rules word for word.
   - That the protocol's model table matches the gate's default list.
   - That the protocol has exactly one reminder line.

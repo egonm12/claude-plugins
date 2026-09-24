@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
 
-from orchestrator_hooks import records  # noqa: E402
+from orchestrator_hooks import __version__, records  # noqa: E402
 
 TS = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 ROUTE_VERDICT = {"route": "delegate", "route_conf": 0.12, "route_probs": {}, "tier": "sonnet",
@@ -36,7 +36,8 @@ def agent_record(**changes: object) -> records.AgentCallRecord:
 
 class ShapeTest(unittest.TestCase):
     def assert_shape(self, data: dict, keys: list, types: dict) -> None:
-        self.assertEqual(list(data), keys)
+        self.assertEqual(list(data), keys + ["plugin_version"])
+        self.assertEqual(data["plugin_version"], __version__)
         self.assertRegex(data["ts"], TS)
         for key, kind in types.items():
             self.assertIsInstance(data[key], kind, key)
@@ -53,19 +54,41 @@ class ShapeTest(unittest.TestCase):
 
     def test_prompt_outcome(self) -> None:
         data = records.PromptOutcomeRecord(session_id="s1", turn=3, n_exploratory=5, n_agent=0,
-                                           n_tool=7, warned=True, source="stop").to_json()
+                                           n_tool=7, warned=True, source="stop", n_edit=2, duration_s=41,
+                                           context_tokens_start=1200, context_tokens_end=5400).to_json()
         self.assert_shape(data, ["kind", "ts", "session_id", "turn", "n_exploratory", "n_agent",
-                                 "n_tool", "warned", "source"],
-                          {"n_exploratory": int, "n_agent": int, "n_tool": int, "warned": bool})
+                                 "n_tool", "n_edit", "warned", "source", "duration_s",
+                                 "context_tokens_start", "context_tokens_end"],
+                          {"n_exploratory": int, "n_agent": int, "n_tool": int, "n_edit": int, "warned": bool})
         self.assertEqual((data["kind"], data["source"]), ("prompt_outcome", "stop"))
+        self.assertEqual((data["n_edit"], data["duration_s"], data["context_tokens_start"],
+                          data["context_tokens_end"]), (2, 41, 1200, 5400))
+
+    def test_prompt_outcome_new_fields_default(self) -> None:
+        data = records.PromptOutcomeRecord(session_id="s1", turn=3, n_exploratory=0, n_agent=0,
+                                           n_tool=0, warned=False, source="stop").to_json()
+        self.assertEqual((data["n_edit"], data["duration_s"], data["context_tokens_start"],
+                          data["context_tokens_end"]), (0, None, None, None))
+
+    def test_agent_result(self) -> None:
+        data = records.AgentResultRecord(session_id="s1", turn=3, agent_id="a1", agent_type="Explore",
+                                         tool_use_id="toolu_01", model="claude-sonnet-5", duration_s=146.2,
+                                         context_tokens_end=48231, report_chars=3911).to_json()
+        self.assert_shape(data, ["kind", "ts", "session_id", "turn", "agent_id", "agent_type", "tool_use_id",
+                                 "model", "duration_s", "context_tokens_end", "report_chars"],
+                          {"turn": int, "duration_s": float, "context_tokens_end": int, "report_chars": int})
+        self.assertEqual((data["kind"], data["model"], data["tool_use_id"]),
+                         ("agent_result", "claude-sonnet-5", "toolu_01"))
 
     def test_agent_call(self) -> None:
         data = agent_record().to_json()
         self.assert_shape(data, ["kind", "ts", "session_id", "turn", "tool", "subagent_type",
                                  "description", "prompt", "model_given", "user_named_subagent",
                                  "verdict", "model_set", "action", "tier_margin", "reason",
-                                 "latency_ms", "server"],
+                                 "latency_ms", "server", "tool_use_id"],
                           {"user_named_subagent": bool, "verdict": dict, "latency_ms": int})
+        self.assertIsNone(data["tool_use_id"])
+        self.assertEqual(agent_record(tool_use_id="toolu_01").to_json()["tool_use_id"], "toolu_01")
         self.assertEqual(data["kind"], "agent_call")
         self.assertIsNone(data["model_given"])
         self.assertEqual(data["verdict"], TIER_VERDICT)

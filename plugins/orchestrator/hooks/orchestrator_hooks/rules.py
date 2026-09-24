@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from .config import DEFAULT_PORT, env_int
 
 READING_TOOLS = frozenset({"Read", "Grep", "Glob", "WebFetch", "WebSearch"})
+# Tools that change files. They count as the main thread's own work, never as exploration.
+EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
 ROUTES = ("delegate", "self", "skill")
 # Routes the hooks act on. "unsure" is a model verdict too close to call.
 EFFECTIVE_ROUTES = ROUTES + ("unsure",)

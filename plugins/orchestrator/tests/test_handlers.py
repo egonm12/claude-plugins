@@ -16,7 +16,7 @@ from unittest import mock
 PLUGIN = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN / "hooks"))
 
-from orchestrator_hooks import handlers  # noqa: E402
+from orchestrator_hooks import __version__, handlers  # noqa: E402
 from orchestrator_hooks.output import HookResult  # noqa: E402
 
 STUB_DELEGATE = json.dumps({
@@ -760,14 +760,17 @@ class CounterTest(HandlerCase):
 class LogKindsTest(HandlerCase):
     expected = {
         "prompt": ["kind", "ts", "session_id", "turn", "cwd", "text", "verdict", "route_effective", "margin",
-                   "carried_from_turn", "latency_ms", "server"],
-        "prompt_outcome": ["kind", "ts", "session_id", "turn", "n_exploratory", "n_agent", "n_tool", "warned",
-                           "source"],
+                   "carried_from_turn", "latency_ms", "server", "plugin_version"],
+        "prompt_outcome": ["kind", "ts", "session_id", "turn", "n_exploratory", "n_agent", "n_tool", "n_edit",
+                           "warned", "source", "duration_s", "context_tokens_start", "context_tokens_end",
+                           "plugin_version"],
         "agent_call": ["kind", "ts", "session_id", "turn", "tool", "subagent_type", "description", "prompt",
                        "model_given", "user_named_subagent", "verdict", "model_set", "action", "tier_margin",
-                       "reason", "latency_ms", "server"],
+                       "reason", "latency_ms", "server", "tool_use_id", "plugin_version"],
         "exploration_warning": ["kind", "ts", "session_id", "turn", "n_exploratory", "threshold", "tool",
-                                "blocked"],
+                                "blocked", "plugin_version"],
+        "agent_result": ["kind", "ts", "session_id", "turn", "agent_id", "agent_type", "tool_use_id", "model",
+                         "duration_s", "context_tokens_end", "report_chars", "plugin_version"],
     }
 
     def test_every_kind_has_the_expected_keys(self) -> None:
@@ -775,14 +778,225 @@ class LogKindsTest(HandlerCase):
         self.agent({"description": "x"}, session="k1", ORCHESTRATOR_ROUTER_STUB=STUB_TIER)
         for _ in range(3):
             self.read("k1")
+        self.run_event("subagent-stop", {"session_id": "k1", "agent_id": "a1", "agent_type": "Explore"})
         self.run_event("stop", {"session_id": "k1"})
         rows = self.log()
-        self.assertEqual([r["kind"] for r in rows], ["prompt", "agent_call", "exploration_warning", "prompt_outcome"])
+        self.assertEqual([r["kind"] for r in rows],
+                         ["prompt", "agent_call", "exploration_warning", "agent_result", "prompt_outcome"])
         for row in rows:
             self.assertEqual(list(row), self.expected[row["kind"]])
+            self.assertEqual(row["plugin_version"], __version__)
             self.assertRegex(row["ts"], TS_PATTERN)
             self.assertEqual((row["session_id"], row["turn"]), ("k1", 1))
         self.assertEqual(self.state("k1")["n_agent"], 1)
+
+
+def transcript_line(ts: str, tokens: tuple, model: str = "claude-opus-5-5", sidechain: bool = False,
+                    content: Any = None) -> str:
+    usage = {"input_tokens": tokens[0], "cache_read_input_tokens": tokens[1], "cache_creation_input_tokens": tokens[2]}
+    return json.dumps({"type": "assistant", "isSidechain": sidechain, "timestamp": ts,
+                       "message": {"model": model, "usage": usage, "content": content or []}}) + "\n"
+
+
+class EditCounterTest(HandlerCase):
+    def edit(self, session: str, tool: str = "Edit", agent_id: str = "", **env: str) -> HookResult:
+        payload: Dict[str, Any] = {"session_id": session, "tool_name": tool, "tool_input": {"file_path": "/x"}}
+        if agent_id:
+            payload["agent_id"] = agent_id
+        return self.run_event("edit-call", payload, **env)
+
+    def test_counts_every_edit_tool_and_nothing_else(self) -> None:
+        self.start_turn("e1", STUB_DELEGATE)
+        for tool in ("Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"):
+            self.assert_empty(self.edit("e1", tool))
+        state = self.state("e1")
+        self.assertEqual((state["n_edit"], state["n_tool"], state["n_exploratory"], state["warned"]),
+                         (4, 0, 0, False))
+
+    def test_edits_never_warn_and_never_count_as_exploratory(self) -> None:
+        self.start_turn("e1", STUB_DELEGATE)
+        for _ in range(10):
+            self.assert_empty(self.edit("e1"))
+        self.assertEqual(self.log("exploration_warning"), [])
+        self.assert_empty(self.read("e1"))
+        self.assert_empty(self.read("e1"))
+        self.assertEqual(self.output(self.read("e1"))["systemMessage"], WARN_3_2)
+
+    def test_skips_workers_router_off_and_no_state(self) -> None:
+        self.start_turn("e1", STUB_DELEGATE)
+        self.assert_empty(self.edit("e1", agent_id="agent-7"))
+        self.assert_empty(self.edit("e1", ORCHESTRATOR_ROUTER_OFF="1"))
+        self.assertEqual(self.state("e1")["n_edit"], 0)
+        self.assert_empty(self.edit("nosuch"))
+        self.assertIsNone(self.state("nosuch"))
+
+    def test_the_outcome_carries_n_edit_and_a_new_turn_resets_it(self) -> None:
+        self.start_turn("e1", STUB_DELEGATE)
+        self.edit("e1")
+        self.edit("e1", "Write")
+        self.run_event("stop", {"session_id": "e1"})
+        self.assertEqual([o["n_edit"] for o in self.log("prompt_outcome")], [2])
+        self.start_turn("e1", STUB_SELF)
+        self.assertEqual(self.state("e1")["n_edit"], 0)
+
+
+class OutcomeMeasuresTest(HandlerCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.transcript = self.tmp / "session.jsonl"
+
+    def prompt(self, session: str, text: str = "look into this for me") -> HookResult:
+        payload = {"session_id": session, "prompt": text, "cwd": "/work", "transcript_path": str(self.transcript)}
+        return self.run_event("prompt", payload, ORCHESTRATOR_ROUTER_STUB=STUB_DELEGATE)
+
+    def stop(self, session: str) -> HookResult:
+        return self.run_event("stop", {"session_id": session, "transcript_path": str(self.transcript)})
+
+    def add_assistant(self, tokens: tuple) -> None:
+        with self.transcript.open("a") as handle:
+            handle.write(transcript_line("2026-09-24T08:00:00Z", tokens))
+
+    def test_context_tokens_start_and_end_come_from_the_transcript(self) -> None:
+        self.add_assistant((2, 1000, 200))
+        self.prompt("m1")
+        self.assertEqual(self.state("m1")["context_tokens_start"], 1202)
+        self.add_assistant((3, 5000, 400))
+        self.stop("m1")
+        outcome = self.log("prompt_outcome")[0]
+        self.assertEqual((outcome["context_tokens_start"], outcome["context_tokens_end"]), (1202, 5403))
+
+    def test_next_prompt_outcome_reads_the_end_from_the_new_prompt(self) -> None:
+        self.add_assistant((0, 100, 0))
+        self.prompt("m1")
+        self.add_assistant((0, 900, 0))
+        self.prompt("m1")
+        outcome = self.log("prompt_outcome")[0]
+        self.assertEqual((outcome["source"], outcome["context_tokens_start"], outcome["context_tokens_end"]),
+                         ("next_prompt", 100, 900))
+        self.assertEqual(self.state("m1")["context_tokens_start"], 900)
+
+    def test_no_or_broken_transcript_gives_null(self) -> None:
+        self.start_turn("m1", STUB_DELEGATE)
+        self.run_event("stop", {"session_id": "m1"})
+        self.transcript.write_text("{not json\n")
+        self.prompt("m2")
+        self.stop("m2")
+        for outcome in self.log("prompt_outcome"):
+            self.assertEqual((outcome["context_tokens_start"], outcome["context_tokens_end"]), (None, None))
+        self.assertIsNone(self.state("m2")["context_tokens_start"])
+
+    def test_duration_is_whole_seconds_from_the_turn_start(self) -> None:
+        self.prompt("m1")
+        state_file = self.data / "state" / "m1.json"
+        state = json.loads(state_file.read_text())
+        started = time.gmtime(time.time() - 42)
+        state["turn_started"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", started)
+        state_file.write_text(json.dumps(state))
+        self.stop("m1")
+        duration = self.log("prompt_outcome")[0]["duration_s"]
+        self.assertIsInstance(duration, int)
+        self.assertIn(duration, (42, 43))
+
+    def test_broken_turn_start_gives_null_duration(self) -> None:
+        self.prompt("m1")
+        state_file = self.data / "state" / "m1.json"
+        state = json.loads(state_file.read_text())
+        state["turn_started"] = "later"
+        state_file.write_text(json.dumps(state))
+        self.stop("m1")
+        self.assertIsNone(self.log("prompt_outcome")[0]["duration_s"])
+
+    def test_a_reopened_turn_keeps_its_start_values(self) -> None:
+        self.add_assistant((0, 100, 0))
+        self.prompt("m1")
+        started = self.state("m1")["turn_started"]
+        self.add_assistant((0, 300, 0))
+        self.stop("m1")
+        self.add_assistant((0, 700, 0))
+        payload = {"session_id": "m1", "prompt": "<task-notification>\n<task-id>1</task-id>",
+                   "transcript_path": str(self.transcript)}
+        self.assert_empty(self.run_event("prompt", payload, ORCHESTRATOR_ROUTER_STUB=STUB_DELEGATE))
+        self.assertEqual((self.state("m1")["context_tokens_start"], self.state("m1")["turn_started"]), (100, started))
+        self.add_assistant((0, 900, 0))
+        self.stop("m1")
+        self.assertEqual([(o["context_tokens_start"], o["context_tokens_end"]) for o in self.log("prompt_outcome")],
+                         [(100, 300), (100, 900)])
+
+
+class SubagentStopTest(HandlerCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.agent_dir = self.tmp / "session" / "subagents"
+        self.agent_dir.mkdir(parents=True)
+        self.agent_file = self.agent_dir / "agent-a1.jsonl"
+
+    def stop_payload(self, **extra: Any) -> Dict[str, Any]:
+        payload = {"session_id": "s1", "hook_event_name": "SubagentStop", "stop_hook_active": False,
+                   "agent_id": "a1", "agent_type": "orchestrator:verifying-worker",
+                   "agent_transcript_path": str(self.agent_file), "last_assistant_message": "closing text"}
+        payload.update(extra)
+        return payload
+
+    def write_agent(self, handback: str = "") -> None:
+        rows = [json.dumps({"type": "user", "isSidechain": True, "timestamp": "2026-09-23T20:01:32.000Z"}) + "\n",
+                transcript_line("2026-09-23T20:01:40.000Z", (1, 2, 3), "claude-sonnet-5", True)]
+        if handback:
+            content = [{"type": "tool_use", "name": "SubagentHandback", "input": {"message": handback}}]
+            rows.append(transcript_line("2026-09-23T20:05:00.000Z", (2, 45745, 2484), "claude-sonnet-5", True,
+                                        content))
+        rows.append(transcript_line("2026-09-23T20:05:02.500Z", (2, 46000, 100), "claude-sonnet-5", True))
+        self.agent_file.write_text("".join(rows))
+        meta = {"agentType": "orchestrator:verifying-worker", "toolUseId": "toolu_01Cc", "model": "sonnet"}
+        (self.agent_dir / "agent-a1.meta.json").write_text(json.dumps(meta))
+
+    def test_writes_an_agent_result_and_prints_nothing(self) -> None:
+        self.start_turn("s1", STUB_DELEGATE)
+        self.write_agent(handback="x" * 3911)
+        self.assert_empty(self.run_event("subagent-stop", self.stop_payload()))
+        record = self.log("agent_result")[0]
+        self.assertEqual({k: record[k] for k in ("session_id", "turn", "agent_id", "agent_type", "tool_use_id",
+                                                 "model", "duration_s", "context_tokens_end", "report_chars")},
+                         {"session_id": "s1", "turn": 1, "agent_id": "a1",
+                          "agent_type": "orchestrator:verifying-worker", "tool_use_id": "toolu_01Cc",
+                          "model": "claude-sonnet-5", "duration_s": 210.5, "context_tokens_end": 46102,
+                          "report_chars": 3911})
+        self.assertRegex(record["ts"], TS_PATTERN)
+
+    def test_without_handback_the_report_is_the_last_message(self) -> None:
+        self.write_agent()
+        self.run_event("subagent-stop", self.stop_payload())
+        self.assertEqual(self.log("agent_result")[0]["report_chars"], len("closing text"))
+        self.run_event("subagent-stop", self.stop_payload(last_assistant_message=None))
+        self.assertIsNone(self.log("agent_result")[1]["report_chars"])
+
+    def test_internal_agent_without_transcript_or_state(self) -> None:
+        self.assert_empty(self.run_event("subagent-stop", {"session_id": "s9", "agent_id": "a9", "agent_type": ""}))
+        record = self.log("agent_result")[0]
+        self.assertEqual((record["turn"], record["agent_type"], record["model"], record["duration_s"],
+                          record["context_tokens_end"], record["tool_use_id"], record["report_chars"]),
+                         (0, "", None, None, None, None, None))
+
+    def test_bad_payloads_never_break_the_hook(self) -> None:
+        for payload in ({}, {"agent_transcript_path": 3, "last_assistant_message": ["x"]},
+                        {"agent_transcript_path": str(self.agent_dir)}):
+            with self.subTest(repr(payload)):
+                self.assert_empty(self.run_event("subagent-stop", payload))
+
+    def test_switches(self) -> None:
+        self.assert_empty(self.run_event("subagent-stop", self.stop_payload(), ORCHESTRATOR_ROUTER_OFF="1"))
+        self.assert_empty(self.run_event("subagent-stop", self.stop_payload(), ORCHESTRATOR_LOG_OFF="1"))
+        self.assert_empty(self.run_event("subagent-stop", self.stop_payload(), ORCHESTRATOR_OFF="1"))
+        self.assertEqual(self.log(), [])
+
+
+class AgentCallLinkTest(HandlerCase):
+    def test_agent_call_logs_the_tool_use_id(self) -> None:
+        self.start_turn("s1", STUB_DELEGATE)
+        payload = {"session_id": "s1", "tool_name": "Agent", "tool_input": {"description": "x", "model": "opus"},
+                   "tool_use_id": "toolu_01Cc"}
+        self.run_event("agent-call", payload, ORCHESTRATOR_ROUTER_STUB=STUB_TIER)
+        self.agent({"description": "y"}, session="s1", ORCHESTRATOR_ROUTER_STUB=STUB_TIER)
+        self.assertEqual([r["tool_use_id"] for r in self.log("agent_call")], ["toolu_01Cc", None])
 
 
 class RouterStartTest(HandlerCase):
