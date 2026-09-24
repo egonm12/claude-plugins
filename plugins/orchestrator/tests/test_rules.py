@@ -112,6 +112,7 @@ class VerdictTest(unittest.TestCase):
         self.assertEqual(verdict.to_dict(), {
             "route": "delegate", "route_conf": 0.123, "route_probs": {"delegate": 0.56},
             "tier": "sonnet", "tier_conf": 0.2, "tier_probs": {"sonnet": 0.5}, "by_regex": False,
+            "route_wording": None, "tier_wording": None,
         })
 
     def test_skill_answer(self) -> None:
@@ -124,10 +125,10 @@ class VerdictTest(unittest.TestCase):
     def test_empty_object(self) -> None:
         self.assertEqual(rules.parse_route_verdict({}).to_dict(), {
             "route": "none", "route_conf": 0, "route_probs": {}, "tier": "none",
-            "tier_conf": 0, "tier_probs": {}, "by_regex": False,
+            "tier_conf": 0, "tier_probs": {}, "by_regex": False, "route_wording": None, "tier_wording": None,
         })
         self.assertEqual(rules.parse_tier_verdict({}).to_dict(),
-                         {"tier": "none", "tier_conf": 0, "tier_probs": {}})
+                         {"tier": "none", "tier_conf": 0, "tier_probs": {}, "tier_wording": None})
 
     def test_junk_types(self) -> None:
         route = rules.parse_route_verdict({
@@ -136,17 +137,36 @@ class VerdictTest(unittest.TestCase):
         })
         self.assertEqual(route.to_dict(), {
             "route": "none", "route_conf": 0, "route_probs": {}, "tier": "none",
-            "tier_conf": 0, "tier_probs": {}, "by_regex": False,
+            "tier_conf": 0, "tier_probs": {}, "by_regex": False, "route_wording": None, "tier_wording": None,
         })
         tier = rules.parse_tier_verdict({"tier": "gpt", "tier_conf": None, "tier_probs": 1})
-        self.assertEqual(tier.to_dict(), {"tier": "none", "tier_conf": 0, "tier_probs": {}})
+        self.assertEqual(tier.to_dict(), {"tier": "none", "tier_conf": 0, "tier_probs": {}, "tier_wording": None})
         for junk in (None, [], "text", 3):
             self.assertEqual(rules.parse_route_verdict(junk).route, "none")
             self.assertEqual(rules.parse_tier_verdict(junk).tier, "none")
 
     def test_tier_answer(self) -> None:
         tier = rules.parse_tier_verdict({"tier": "haiku", "tier_conf": 0.4, "tier_probs": {"haiku": 0.4}})
-        self.assertEqual(tier.to_dict(), {"tier": "haiku", "tier_conf": 0.4, "tier_probs": {"haiku": 0.4}})
+        self.assertEqual(tier.to_dict(), {"tier": "haiku", "tier_conf": 0.4, "tier_probs": {"haiku": 0.4},
+                                          "tier_wording": None})
+
+    def test_wording_ids_are_kept(self) -> None:
+        tier = rules.parse_tier_verdict({"tier": "opus", "tier_wording": "b-2026-09-24"})
+        self.assertEqual(tier.to_dict()["tier_wording"], "b-2026-09-24")
+        route = rules.parse_route_verdict({"route": "self", "route_wording": "a-2026-09-23",
+                                           "tier_wording": "b-2026-09-24"})
+        self.assertEqual((route.to_dict()["route_wording"], route.to_dict()["tier_wording"]),
+                         ("a-2026-09-23", "b-2026-09-24"))
+
+    def test_answer_without_wording_from_an_old_router(self) -> None:
+        # A router before 0.5.5 sends no wording id. The verdict still parses, with null ids.
+        tier = rules.parse_tier_verdict({"tier": "sonnet", "tier_conf": 0.3, "tier_probs": {"sonnet": 0.5}})
+        self.assertEqual((tier.tier, tier.tier_wording), ("sonnet", None))
+        route = rules.parse_route_verdict({"route": "delegate", "route_probs": {"delegate": 0.7, "self": 0.3}})
+        self.assertEqual((route.route, route.route_wording, route.tier_wording), ("delegate", None, None))
+        for junk in (3, "", None, ["x"], {"id": 1}):
+            self.assertIsNone(rules.parse_tier_verdict({"tier_wording": junk}).tier_wording)
+            self.assertIsNone(rules.parse_route_verdict({"route_wording": junk}).route_wording)
 
 
 def route(route: str, probs: dict, by_regex: bool = False) -> rules.RouteVerdict:

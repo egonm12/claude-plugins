@@ -28,6 +28,12 @@ HINT_TEXT = ("orchestrator router: this prompt looks like an investigation (dele
 COUNTER_TEXT = ("orchestrator router: {count} exploratory commands this turn, threshold {threshold} "
                 "(verdict {route}). Hand the rest of the research to a worker.")
 START_TEXT = "orchestrator router: starting the router daemon on {url}. First answers arrive after the model loads."
+RESTART_TEXT = ("orchestrator router: restarting the router daemon on {url}, because it runs version {old} and the "
+                "plugin is version {new}. First answers arrive after the model loads.")
+OUTDATED_TEXT = ("orchestrator router: the router daemon on {url} runs version {old}, but the plugin is version {new}. "
+                 "Stop the process on port {port} (lsof -ti tcp:{port} shows it), then start a new session.")
+STILL_BUSY_TEXT = ("orchestrator router: stopped the outdated router daemon on {url}, but its port is still busy. "
+                   "The next session starts the new one.")
 SET_TEXT = 'the router set model "{tier}" for this worker.'
 REPLACED_TEXT = 'the router set model "{tier}" for this worker, replacing "{given}".'
 FLOOR_TEXT = "the task reads as judgement work, so the router did not use haiku."

@@ -77,6 +77,19 @@ class LabelTest(unittest.TestCase):
             call("s1", 6, "opus", "haiku"),
         ])
 
+    def test_old_and_new_verdicts_load_side_by_side(self) -> None:
+        # Records from 0.5.5 carry wording ids in the verdict. Older records lack them. Both load.
+        new_verdict = {"tier": "sonnet", "tier_probs": {}, "tier_wording": "b-2026-09-24"}
+        self.write_log([
+            prompt("s1", 1, "2026-09-24T09:00:00Z", "delegate"),
+            call("s1", 1, "opus", "haiku"),
+            call("s1", 1, None, "sonnet", verdict=new_verdict),
+        ])
+        log = label.Log.load(self.dir / "router-log.jsonl")
+        self.assertEqual(log.bad, 0)
+        calls = [item["call"] for item in log.tier_items()]
+        self.assertEqual([c["verdict"].get("tier_wording") for c in calls], [None, "b-2026-09-24"])
+
     def test_order_groups_then_newest_first(self) -> None:
         self.standard_log()
         self.run_tool("k\n" * 6)

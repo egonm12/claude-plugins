@@ -50,11 +50,25 @@ class RouterClient:
 
     def health(self) -> bool:
         """True when the daemon answers its health check with a 200."""
+        return self.health_info() is not None
+
+    def health_info(self) -> Optional[Dict[str, Any]]:
+        """The health answer, or None when the daemon is down.
+
+        A 200 with a body that is not a JSON object gives an empty dict, so it still counts as up.
+        """
         try:
             with _OPENER.open(self.url + "/health", timeout=HEALTH_TIMEOUT_S) as response:
-                return response.status == 200
+                if response.status != 200:
+                    return None
+                raw = response.read()
         except Exception:
-            return False
+            return None
+        try:
+            answer = json.loads(raw.decode("utf-8"))
+        except ValueError:
+            return {}
+        return answer if isinstance(answer, dict) else {}
 
     def _ask(self, endpoint: str, text: str) -> Answer:
         if self.stub is not None:

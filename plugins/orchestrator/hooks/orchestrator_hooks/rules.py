@@ -100,14 +100,22 @@ def _choice(value: Any, choices: tuple) -> str:
     return value if isinstance(value, str) and value in choices else "none"
 
 
+def _wording(value: Any) -> Optional[str]:
+    """A wording id, or None when the answer has none, such as from a router before 0.5.5."""
+    return value if isinstance(value, str) and value else None
+
+
 @dataclass
 class TierVerdict:
     tier: str = "none"
     tier_conf: float = 0
     tier_probs: Dict[str, Any] = field(default_factory=dict)
+    # The id of the question wording that gave the verdict, so an evaluation can split the log by it.
+    tier_wording: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"tier": self.tier, "tier_conf": self.tier_conf, "tier_probs": self.tier_probs}
+        return {"tier": self.tier, "tier_conf": self.tier_conf, "tier_probs": self.tier_probs,
+                "tier_wording": self.tier_wording}
 
 
 @dataclass
@@ -119,12 +127,14 @@ class RouteVerdict:
     tier_conf: float = 0
     tier_probs: Dict[str, Any] = field(default_factory=dict)
     by_regex: bool = False
+    route_wording: Optional[str] = None
+    tier_wording: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "route": self.route, "route_conf": self.route_conf, "route_probs": self.route_probs,
             "tier": self.tier, "tier_conf": self.tier_conf, "tier_probs": self.tier_probs,
-            "by_regex": self.by_regex,
+            "by_regex": self.by_regex, "route_wording": self.route_wording, "tier_wording": self.tier_wording,
         }
 
 
@@ -139,6 +149,8 @@ def parse_route_verdict(obj: Any) -> RouteVerdict:
         tier_conf=_number(answer.get("tier_conf")),
         tier_probs=_object(answer.get("tier_probs")),
         by_regex=answer.get("by_regex") is True,
+        route_wording=_wording(answer.get("route_wording")),
+        tier_wording=_wording(answer.get("tier_wording")),
     )
 
 
@@ -149,6 +161,7 @@ def parse_tier_verdict(obj: Any) -> TierVerdict:
         tier=_choice(answer.get("tier"), TIERS),
         tier_conf=_number(answer.get("tier_conf")),
         tier_probs=_object(answer.get("tier_probs")),
+        tier_wording=_wording(answer.get("tier_wording")),
     )
 
 

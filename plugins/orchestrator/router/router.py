@@ -19,6 +19,10 @@ import laya
 
 DEFAULT_CHECKPOINT = "convaiinnovations/laya"
 SLASH = re.compile(r"^\s*/[A-Za-z]")
+# Ids of the question wordings. The server returns them and the hooks log them, so an
+# evaluation can split the log by wording. Change the id whenever the wording changes.
+ROUTE_WORDING = "a-2026-09-23"
+TIER_WORDING = "b-2026-09-24"
 
 ROUTE_QUESTION = {
     "type": "choice",
@@ -41,21 +45,23 @@ ROUTE_LABELS = {"a": "delegate", "b": "self"}
 TIER_QUESTION = {
     "type": "choice",
     "instructions": (
-        "This is a task for a worker agent. How much judgement does it need? "
-        "Pick the smallest capability that can do it well."
+        "This is a task for a worker agent. Does the worker have to work out the approach itself, "
+        "or is the approach given? Pick the smallest capability that can do it well."
     ),
     "criteria": {
         "a": (
-            "Careful judgement: design, code review, security analysis, ambiguous requirements, "
-            "or a high-stakes decision."
+            "Open-ended work where the worker must find its own way: researching facts outside the "
+            "codebase or an unfamiliar system, finding the root cause of a failure, designing or "
+            "splitting a change, or building new tooling."
         ),
         "b": (
-            "Normal skilled work: implementing a change, researching across files, debugging, "
-            "or a multi-step task with clear goals."
+            "Work that follows a path the task already lays out: drafting or reviewing against given "
+            "criteria or a checklist, taking stock of the current state, comparing two things for "
+            "parity, or making a well-specified edit."
         ),
         "c": (
             "Mechanical work with an obvious answer: grepping, listing files, renaming, counting, "
-            "stripping comments, or reformatting."
+            "or reformatting."
         ),
     },
 }
