@@ -151,7 +151,7 @@ Each wording has an id, such as `b-2026-09-24` for this tier question and `a-202
 
 ### An outdated daemon restarts itself
 
-The daemon keeps running the code it started with. After a plugin update it would keep serving the old question. So the health check names the plugin version the daemon runs, and the session start hook compares it with its own version. When the versions differ, or the daemon names none, the hook restarts it:
+The daemon keeps running the code it started with. After a plugin update it would keep serving the old question. So the health check names the plugin version the daemon runs, and the session start hook compares it with its own version. When the daemon runs an older version, or names none, the hook restarts it. A daemon that runs a newer version is left alone, so a session that has not reloaded yet never stops the router of a newer version:
 
 - It reads the daemon's process id from the pid file in the data directory.
 - It stops that process only when the command line of that process contains `server.py`.

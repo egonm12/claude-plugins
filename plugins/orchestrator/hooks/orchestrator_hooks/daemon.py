@@ -16,7 +16,7 @@ import os
 import signal
 import subprocess
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import __version__, rules
 from .client import RouterClient
@@ -39,7 +39,7 @@ def start_router(config: Config) -> Optional[str]:
     health = client.health_info()
     if health is not None:
         running = health_version(health)
-        if running == __version__:
+        if not is_older(running, __version__):
             return None
         return _replace_outdated(config, client, running)
     if _pid_alive(config):
@@ -138,6 +138,20 @@ def _wait_until_down(client: RouterClient) -> bool:
         if time.monotonic() >= deadline:
             return False
         time.sleep(STOP_POLL_S)
+
+
+def is_older(running: Optional[str], mine: str) -> bool:
+    """True when the running daemon's version is older than this plugin's, or unknown.
+
+    A newer daemon is left alone, so an older session never stops the router a newer version started.
+    """
+    def parts(version: Optional[str]) -> Optional[Tuple[int, ...]]:
+        try:
+            return tuple(int(p) for p in (version or "").split("."))
+        except ValueError:
+            return None
+    ran, own = parts(running), parts(mine)
+    return ran is None or own is None or ran < own
 
 
 def health_version(health: Dict[str, Any]) -> Optional[str]:

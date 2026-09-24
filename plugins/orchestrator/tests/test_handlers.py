@@ -16,7 +16,7 @@ from unittest import mock
 PLUGIN = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN / "hooks"))
 
-from orchestrator_hooks import __version__, handlers  # noqa: E402
+from orchestrator_hooks import __version__, daemon, handlers  # noqa: E402
 from orchestrator_hooks.output import HookResult  # noqa: E402
 
 STUB_DELEGATE = json.dumps({
@@ -1146,6 +1146,22 @@ class RouterRestartTest(RouterStartCase):
         self.assertEqual(self.start().stdout, "# Protocol\n")
         self.command.assert_not_called()
         self.assert_not_stopped()
+
+    def test_newer_version_does_nothing(self) -> None:
+        # An older session must not stop the router that a newer plugin version started.
+        for newer in ("99.0.0", "0.5.10", __version__ + ".1"):
+            with self.subTest(newer=newer):
+                self.health_info.return_value = {"status": "ok", "plugin_version": newer}
+                self.assertEqual(self.start().stdout, "# Protocol\n")
+                self.command.assert_not_called()
+                self.assert_not_stopped()
+
+    def test_older_version_compares_by_number(self) -> None:
+        self.assertTrue(daemon.is_older("0.5.9", "0.5.10"))
+        self.assertFalse(daemon.is_older("0.5.10", "0.5.9"))
+        self.assertFalse(daemon.is_older("0.5.5", "0.5.5"))
+        self.assertTrue(daemon.is_older(None, "0.5.5"))
+        self.assertTrue(daemon.is_older("junk", "0.5.5"))
 
     def test_unconfirmed_pid_is_not_stopped(self) -> None:
         cases = {
