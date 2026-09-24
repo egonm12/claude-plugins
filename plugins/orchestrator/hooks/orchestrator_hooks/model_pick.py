@@ -46,7 +46,8 @@ def model_pick(payload: Dict[str, Any], config: Config) -> Optional[Pick]:
         session_id=session, turn=current.turn if current else 0, tool=hook_payload.field_text(payload, "tool_name"),
         subagent_type=subagent_type, description=description, prompt=task, model_given=given,
         user_named_subagent=False, verdict=rules.TierVerdict().to_dict(), model_set=given, action="fork",
-        tier_margin=None, reason="fork", latency_ms=0, server="none")
+        tier_margin=None, reason="fork", latency_ms=0, server="none",
+        tool_use_id=hook_payload.field_text(payload, "tool_use_id") or None)
     pick = None
     if subagent_type != "fork":
         call.user_named_subagent = rules.user_named_subagent(current.prompt if current else "", subagent_type)

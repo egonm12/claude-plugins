@@ -27,6 +27,7 @@ class StateTest(unittest.TestCase):
             session_id="s1", turn=3, turn_started="2026-09-23T14:00:00Z", prompt="use the explore agent",
             route="delegate", route_conf=0.12, tier="sonnet", threshold=2,
             n_exploratory=1, n_agent=2, n_tool=3, warned=True, finalized=False, server="ok",
+            n_edit=4, context_tokens_start=179353,
         )
         self.assertTrue(state.save(self.path, record))
         self.assertEqual(state.load(self.path), record)
@@ -34,6 +35,7 @@ class StateTest(unittest.TestCase):
         self.assertEqual(list(written), [
             "session_id", "turn", "turn_started", "prompt", "route", "route_conf", "tier",
             "threshold", "n_exploratory", "n_agent", "n_tool", "warned", "finalized", "server",
+            "n_edit", "context_tokens_start",
         ])
         self.assertEqual([p.name for p in self.path.parent.iterdir()], ["s1.json"])
 
@@ -60,6 +62,16 @@ class StateTest(unittest.TestCase):
         assert loaded is not None
         self.assertEqual((loaded.turn, loaded.n_tool, loaded.warned, loaded.threshold), (2, 0, False, 4))
         self.assertEqual(loaded.route, "none")
+
+    def test_context_tokens_start_is_a_whole_number_or_null(self) -> None:
+        self.path.parent.mkdir(parents=True)
+        for stored, expected in ((1200, 1200), (12.9, 12), (None, None), ("x", None), (True, None)):
+            with self.subTest(repr(stored)):
+                self.path.write_text(json.dumps({"session_id": "s1", "context_tokens_start": stored}))
+                loaded = state.load(self.path)
+                assert loaded is not None
+                self.assertEqual(loaded.context_tokens_start, expected)
+        self.assertEqual((state.TurnState().n_edit, state.TurnState().context_tokens_start), (0, None))
 
     def test_save_failure_returns_false(self) -> None:
         blocker = self.dir / "file"

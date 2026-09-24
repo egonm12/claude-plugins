@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import unittest
 from pathlib import Path
 from typing import Any, Dict, List
@@ -15,6 +16,8 @@ from typing import Any, Dict, List
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 HOOKS_JSON = PLUGIN_ROOT / "hooks" / "hooks.json"
 PLUGIN_JSON = PLUGIN_ROOT / ".claude-plugin" / "plugin.json"
+APM_YML = PLUGIN_ROOT / "apm.yml"
+MARKETPLACE_JSON = PLUGIN_ROOT.parents[1] / ".claude-plugin" / "marketplace.json"
 PROTOCOL = PLUGIN_ROOT / "references" / "orchestrator-protocol.md"
 INSTRUCTIONS = PLUGIN_ROOT / ".apm" / "instructions" / "orchestrator.instructions.md"
 AGENTS_DIR = PLUGIN_ROOT / "agents"
@@ -28,7 +31,9 @@ EXPECTED_REGISTRATIONS = [
     ("UserPromptSubmit", None, "prompt", 5),
     ("PreToolUse", "Agent|Task", "agent-call", 5),
     ("PreToolUse", "Bash|Read|Grep|Glob|WebFetch|WebSearch", "tool-call", 5),
+    ("PostToolUse", "Edit|Write|MultiEdit|NotebookEdit", "edit-call", 5),
     ("Stop", None, "stop", 5),
+    ("SubagentStop", None, "subagent-stop", 5),
 ]
 
 
@@ -60,15 +65,26 @@ class ManifestTest(unittest.TestCase):
     def test_plugin_json_parses(self) -> None:
         self.assertIsInstance(load_json(PLUGIN_JSON), dict)
 
+    def test_package_version_matches_the_manifests(self) -> None:
+        sys.path.insert(0, str(PLUGIN_ROOT / "hooks"))
+        from orchestrator_hooks import __version__
+        self.assertEqual(__version__, load_json(PLUGIN_JSON)["version"], "plugin.json")
+        apm = re.search(r"^version: (\S+)$", APM_YML.read_text(encoding="utf-8"), flags=re.MULTILINE)
+        self.assertEqual(__version__, apm.group(1) if apm else None, "apm.yml")
+        if MARKETPLACE_JSON.is_file():
+            listed = [p["version"] for p in load_json(MARKETPLACE_JSON)["plugins"] if p["name"] == "orchestrator"]
+            self.assertEqual([__version__], listed, "marketplace.json")
+
 
 class HooksJsonTest(unittest.TestCase):
     def setUp(self) -> None:
         self.hooks = load_json(HOOKS_JSON)
 
     def test_event_keys(self) -> None:
-        self.assertEqual(set(self.hooks["hooks"]), {"SessionStart", "UserPromptSubmit", "PreToolUse", "Stop"})
+        self.assertEqual(set(self.hooks["hooks"]), {"SessionStart", "UserPromptSubmit", "PreToolUse",
+                                                    "PostToolUse", "Stop", "SubagentStop"})
 
-    def test_exactly_five_registrations(self) -> None:
+    def test_exactly_seven_registrations(self) -> None:
         found = [(e, m, h["command"].rsplit(" ", 1)[-1], h.get("timeout"))
                  for e, m, h in registrations(self.hooks)]
         self.assertEqual(sorted(found, key=repr), sorted(EXPECTED_REGISTRATIONS, key=repr))
