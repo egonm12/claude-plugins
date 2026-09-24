@@ -74,6 +74,11 @@ class ManifestTest(unittest.TestCase):
         if MARKETPLACE_JSON.is_file():
             listed = [p["version"] for p in load_json(MARKETPLACE_JSON)["plugins"] if p["name"] == "orchestrator"]
             self.assertEqual([__version__], listed, "marketplace.json")
+        repo_readme = MARKETPLACE_JSON.parent.parent / "README.md"
+        if repo_readme.is_file():
+            row = re.search(r"^\| \[orchestrator\]\([^)]*\) \| (\S+) \|", repo_readme.read_text(encoding="utf-8"),
+                            flags=re.MULTILINE)
+            self.assertEqual(__version__, row.group(1) if row else None, "repository README")
 
 
 class HooksJsonTest(unittest.TestCase):
