@@ -286,8 +286,15 @@ If a session model field turns out to be present, the fork case can become a har
 | SessionStart loader at startup and resume | Confirmed live on 2026-09-13, and again on 2026-09-23 on version 0.2.0. |
 | SessionStart reload after compaction | Confirmed live on 2026-09-23, on version 0.3.0. After `/compact`, the protocol was back in Claude's context. |
 | Per-turn reminder | Confirmed live on 2026-09-23, on version 0.4.0. It also fires on a skill command such as `/implement`. |
-| Python entry point for all hooks | Not yet confirmed live through Claude Code on version 0.5.0. The bash versions of the gate, loader and reminder were confirmed live. The Python port carries their test cases. |
-| Router: hint, counter, model pick, start, finaliser | Not yet confirmed live through Claude Code on version 0.5.0. On 2026-09-23 the hooks were run by hand against the real daemon and behaved as specified. Setting a model through `updatedInput` was confirmed in a separate hook experiment the same day. |
+| Python entry point for all hooks | Confirmed live on 2026-09-23, on version 0.5.1. Real sessions wrote prompt, outcome and worker call records to the log. |
+| Router: hint, start, finaliser | Confirmed live on 2026-09-23, on version 0.5.1. The session start hook started the daemon, the hint reached Claude, and outcomes were written on Stop and at the next prompt. |
+| Exploration counter | Counting confirmed live on 2026-09-23, on version 0.5.1. A warning has not fired live yet. |
+| Model pick through `updatedInput` | Confirmed live on 2026-09-23, on version 0.5.2. Claude asked for opus, the router set sonnet, and the worker transcript shows every message on sonnet. |
+| Unsure verdicts and carry-over of short follow-ups | Confirmed live on 2026-09-23, on version 0.5.2. A 51 to 49 verdict was logged as unsure, and "Only this one" took the route of the turn before. |
+| Worker reports skipped by the prompt hook | Confirmed live on 2026-09-24, on version 0.5.3. No hand-back or task notice reached the log as a prompt. |
+| Downgrade guard and judgement floor | Not yet confirmed live. No worker call on version 0.5.3 or later has needed them. |
+| Turn outcome: edits, duration, context size | Confirmed live on 2026-09-24, on version 0.5.4. |
+| Worker results | Fires live on 2026-09-24, on version 0.5.4, but only for Claude Code's internal agents so far. A result for a real worker has not been seen yet. |
 
 ## Known costs
 
