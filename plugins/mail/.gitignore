@@ -1,0 +1,7 @@
+# Owner data never belongs in the package.
+state.json
+config.json
+style-profile*.md
+triage-rules*.md
+!templates/style-profile.template.md
+!templates/triage-rules.template.md

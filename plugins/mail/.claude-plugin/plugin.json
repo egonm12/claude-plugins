@@ -1,0 +1,11 @@
+{
+  "name": "mail",
+  "version": "0.1.0",
+  "description": "Triages the owner's mailbox into action labels and writes reply drafts in the owner's own voice. Drafts only, never sends.",
+  "author": {
+    "name": "Egon Meijers",
+    "url": "https://github.com/egonm12"
+  },
+  "license": "MIT",
+  "keywords": ["mail", "gmail", "triage", "drafts", "writing-style"]
+}
