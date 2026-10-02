@@ -1,0 +1,15 @@
+{
+  "account": "",
+  "provider": "",
+  "paths": {
+    "profile": "~/.config/mail/style-profile.md",
+    "triage_rules": "~/.config/mail/triage-rules.md",
+    "state": "~/.config/mail/state.json"
+  },
+  "context_sources": [],
+  "excluded_sources": [],
+  "calendar": false,
+  "writing_rules_file": null,
+  "label_prefix": "AI/",
+  "auto_archive_fyi": false
+}
