@@ -26,7 +26,8 @@ Commands below leave out `gog` and the global flags.
 | Operation | Command | Notes |
 |---|---|---|
 | Search | `gmail search '<query>' --all` for threads; `gmail messages search '<query>' --all` for messages | `--all` fetches every page. |
-| Read thread | `gmail thread get <threadId> --full` | |
+| Read thread | `gmail thread get <threadId> --full` | Can include drafts. Use the draft check to tell them apart, not the message's labels or look. |
+| Draft check | `gmail messages search 'in:drafts' --all` | Gives the message id and thread id of every draft. |
 | Read sent mail | `gmail messages search 'in:sent <query>' --all --full` | `--full` includes the full bodies. |
 | List and create labels | `gmail labels list`; `gmail labels create '<name>'` | |
 | Modify labels | `gmail batch modify <messageId> ... --add '<labels>' --remove '<labels>'` | Comma-separated label names or ids. Pass the latest message of each thread. Archive by removing `INBOX`. |
@@ -39,7 +40,7 @@ Read the signature once per run, with the global flags: `gmail settings sendas g
 
 ## Search syntax
 
-Gmail search syntax, as the skill writes it. Label search turns `/` and spaces into `-`: the label `AI/To reply` is `label:ai-to-reply`. Draft check: `gmail search 'in:drafts' --all` and match the thread id.
+Gmail search syntax, as the skill writes it. Label search turns `/` and spaces into `-`: the label `AI/To reply` is `label:ai-to-reply`. Draft check: see the table above.
 
 ## Auth errors
 

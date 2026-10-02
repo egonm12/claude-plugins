@@ -54,6 +54,10 @@ _Avoid_: mode, tone
 The owner data file that describes the owner's voice per register. The single source of truth for mail writing.
 _Avoid_: style guide, persona
 
+**Draft check**:
+The provider lookup that lists every draft by message id. The only evidence for whether an owner message in a thread is a draft or sent.
+_Avoid_: guessing from the thread read
+
 **Exemplar**:
 A recent email the owner sent to the same recipient, used as a live voice sample for one draft.
 _Avoid_: example, template

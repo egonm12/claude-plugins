@@ -45,16 +45,27 @@ Completion: the config, the provider file, the state and the triage rules are lo
 
 ## Provider operations
 
-The branch files use six operations. The provider file maps each one to a concrete tool or command:
+The branch files use seven operations. The provider file maps each one to a concrete tool or command:
 
 - **Search:** find messages or threads with a query, paged to the end.
 - **Read thread:** every message of a thread, with sender, recipients, reply headers, labels and drafts.
 - **Read sent mail:** the owner's own sent messages for a query, with their bodies.
+- **Draft check:** the message id and thread id of every draft in the mailbox, paged to the end.
 - **List and create labels.**
 - **Modify labels:** add and remove labels, including the inbox label to archive.
 - **Create a draft in a thread:** a reply draft with recipients, subject, reply headers and an HTML body. The provider file says whether the provider appends the owner's signature or the skill must.
 
 Queries in these files use Gmail search syntax. A provider file translates it when its provider uses another syntax.
+
+## Drafts in a thread
+
+A thread read can list drafts as ordinary messages, with a sender, a date and a body, and without any draft marker. Never decide from a thread read alone that a message is sent.
+
+Run the draft check once per mode, before the first decision that depends on it. A message is a **draft** when its message id is in the draft check result, and **sent** otherwise. Every rule in these files that names "the owner's message", "the last message" or "a sent reply" means sent messages only: leave drafts out of the thread before applying it. The reply headers for a new draft also come from the last message that is not a draft.
+
+When the draft check fails or returns nothing while `state.drafts` is not empty, stop reconcile and report it. Never fall back to guessing.
+
+Completion: every message of every thread read in this mode is known as draft or sent.
 
 ## Context sources
 
@@ -68,16 +79,18 @@ Use the calendar only when `calendar` is `true`, through the calendar lookup in 
 
 Run before triage or drafting. For every thread id in `state.drafts`:
 
-1. Read the thread.
-2. **Sent:** the last message is from the owner and is not a draft. Remove `To reply` and `Drafted`. When the sent body differs from the stored `text`, extract a **lesson** (see [PROFILE.md](PROFILE.md) "Lessons"). Then delete the state entry.
-3. **Edited:** the draft still exists but its fingerprint differs. Set `edited: true`. Leave it alone.
-4. **Discarded:** no draft and no sent reply. Remove `Drafted` and delete the state entry.
+1. Run the draft check (see "Drafts in a thread") and read the thread. Split its messages into drafts and sent messages.
+2. **Draft still there:** the thread has a draft from the owner. Compute its fingerprint. When it matches the state, the draft is untouched: leave it and the labels alone. When it differs, set `edited: true` and leave it alone. Stop here for this thread: a thread with a draft is never sent or discarded, whatever its last message looks like.
+3. **Sent:** no draft, and the last sent message is from the owner and newer than the entry's `created`. Remove `To reply` and `Drafted`. When the sent body differs from the stored `text`, extract a **lesson** (see [PROFILE.md](PROFILE.md) "Lessons"). Then delete the state entry.
+4. **Discarded:** no draft and no sent reply from the owner since `created`. Remove `Drafted` and delete the state entry.
 
-Then, for threads labelled `To reply` where the owner's message is the last one: remove `To reply`.
+In the run report, name for every thread which of the four cases applied and the evidence: the draft's message id, or the sent message's date.
+
+Then, for threads labelled `To reply` where the last sent message is from the owner: remove `To reply`. A draft at the end of the thread does not count.
 
 Then, for every thread with a skill label that differs from `state.triaged[threadId]`: the owner relabelled it. Propose a triage rule that describes the pattern (sender, domain or subject type, not the single thread), add it to the triage rules once the owner approves, and update `triaged`.
 
-Completion: every state draft is sent, edited, discarded or untouched, and every relabel has a rule proposal.
+Completion: every state draft is sent, edited, discarded or untouched on the evidence of the draft check, and every relabel has a rule proposal.
 
 ## Run report (end of every mode)
 

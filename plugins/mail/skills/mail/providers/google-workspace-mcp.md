@@ -18,7 +18,8 @@ Pass `user_google_email` as the config `account`. Load the Gmail tools before th
 | Operation | Tool | Notes |
 |---|---|---|
 | Search | `search_gmail_messages` with `query`, `page_size` and `page_token` | Repeat with the returned page token until there is none. Returns message ids and thread ids. |
-| Read thread | `get_gmail_thread_content` with `thread_id`; for several threads `get_gmail_threads_content_batch` with `thread_ids` | |
+| Read thread | `get_gmail_thread_content` with `thread_id`; for several threads `get_gmail_threads_content_batch` with `thread_ids` | Lists drafts as ordinary messages, with no draft marker and no labels. Drafts created through the API often show a bare address as sender, a non-local timezone and no signature, but never rely on that: use the draft check. |
+| Draft check | `search_gmail_messages` with `query="in:drafts"`, paged to the end | Each result gives the draft's Message ID and Thread ID. Match on the message id; the `draft_id` in the state (`r...`) is a different id. |
 | Read sent mail | Search with an `in:sent` query, then `get_gmail_messages_content_batch` or `get_gmail_threads_content_batch` | |
 | List and create labels | `list_gmail_labels`; `manage_gmail_label` with `action="create"` and `name` | Record the label ids: modify takes ids. |
 | Modify labels | `batch_modify_gmail_message_labels` with `message_ids`, `add_label_ids` and `remove_label_ids` | Takes message ids, not thread ids: pass the latest message of each thread. Archive by removing `INBOX`. |
@@ -27,7 +28,7 @@ Pass `user_google_email` as the config `account`. Load the Gmail tools before th
 
 ## Search syntax
 
-Gmail search syntax, as the skill writes it. Label search turns `/` and spaces into `-`: the label `AI/To reply` is `label:ai-to-reply`. Draft check: search `in:drafts` and match the thread id.
+Gmail search syntax, as the skill writes it. Label search turns `/` and spaces into `-`: the label `AI/To reply` is `label:ai-to-reply`. Draft check: see the table above.
 
 ## Auth errors
 

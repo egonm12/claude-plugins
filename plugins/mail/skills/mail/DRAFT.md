@@ -8,7 +8,7 @@ Read the style profile (`paths.profile`) in full before the first draft. For mai
 
 ### 1. Skip check
 
-Skip and report when the thread already has a draft: an edited one is the owner's, and an untouched one stays because the skill never updates or deletes a draft. Tell the owner to discard it in their mail client if they want a fresh one.
+Run the draft check (see SKILL.md "Drafts in a thread"). Skip and report when the thread already has a draft: an edited one is the owner's, and an untouched one stays because the skill never updates or deletes a draft. Tell the owner to discard it in their mail client if they want a fresh one.
 
 ### 2. Gather
 
@@ -54,7 +54,7 @@ Revise until every item passes. When the profile and the writing rules file disa
 Convert to simple HTML: `<p>`, `<br>`, `<ul>`, `<li>` and `<b>` only, no styling. When the profile has `signature_appended_by_provider: false`, append the signature as the provider file describes. Create a draft in the thread with:
 
 - the HTML body,
-- the thread and the reply headers of the last message,
+- the thread and the reply headers of the last message that is not a draft,
 - the subject as `Re: <original>`, unless it already starts with a reply prefix such as `Re:` or `Antw:`,
 - `to` and `cc` from step 2.
 

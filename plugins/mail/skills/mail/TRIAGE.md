@@ -22,7 +22,7 @@ Apply the triage rules first; a matching rule decides. Otherwise judge from the 
 
 | Label | When |
 |---|---|
-| `To reply` | A human asks the owner something or expects their answer, and the owner's message is not the last one. Direct questions, requests for their opinion or availability, threads where they are clearly the one to answer. |
+| `To reply` | A human asks the owner something or expects their answer, and the last sent message is not the owner's (a draft does not count, see SKILL.md "Drafts in a thread"). Direct questions, requests for their opinion or availability, threads where they are clearly the one to answer. |
 | `To act` | The owner must do something that is not a reply: approve, pay, sign, review a PR or document, fill in a form, accept an invite that needs a decision. |
 | `To read` | Written by a human or relevant to the owner's work, worth reading, no response expected: updates, CC'd decisions, reports from their team or clients. |
 | `FYI` | Automated or bulk: newsletters, notifications, receipts, marketing, no-reply senders, mailing lists where the owner is not addressed. |
